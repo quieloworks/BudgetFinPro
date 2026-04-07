@@ -6,6 +6,7 @@ import {
   TextInput,
   Pressable,
   ScrollView,
+  Keyboard,
   Platform,
   Switch,
   Animated,
@@ -241,6 +242,22 @@ export function FinanceScreen() {
   };
   const [form, setForm] = useState(blankForm());
   const txFormScrollRef = useRef(null);
+  /** Altura del teclado: mismo slack arriba y abajo del TxForm para poder scrollear hacia abajo o hacia arriba con el teclado abierto. */
+  const [txFormKbPad, setTxFormKbPad] = useState(0);
+  useEffect(() => {
+    const showEv =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEv =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const show = Keyboard.addListener(showEv, (e) =>
+      setTxFormKbPad(e.endCoordinates.height),
+    );
+    const hide = Keyboard.addListener(hideEv, () => setTxFormKbPad(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   /** Props vivas para DrillBalance (componente estable vía useMemo; evita remount del ScrollView horizontal del time frame). */
   const balanceDrillPropsRef = useRef(null);
 
@@ -5370,10 +5387,8 @@ export function FinanceScreen() {
                 showsVerticalScrollIndicator
                 style={{ flex: 1, minHeight: 120 }}
                 contentContainerStyle={{
-                  paddingTop: 4,
-                  paddingBottom: 28,
-                  flexGrow: 1,
-                  justifyContent: "flex-start",
+                  paddingTop: 4 + Math.round(txFormKbPad / 2),
+                  paddingBottom: 28 + Math.round(txFormKbPad / 4),
                 }}
               >
                 <TxForm

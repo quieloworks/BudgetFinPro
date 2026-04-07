@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/modal/ReactModalHostView.kt b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/modal/ReactModalHostView.kt
+index c711027..9cc8845 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/modal/ReactModalHostView.kt
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/modal/ReactModalHostView.kt
+@@ -324,7 +324,7 @@ public class ReactModalHostView(context: ThemedReactContext) :
+           }
+         })
+ 
+-    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
++    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+     if (hardwareAccelerated) {
+       window.addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
+     }
