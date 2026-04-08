@@ -133,7 +133,11 @@
     "trendEmpty": "Aún no hay ingresos ni gastos en estos meses.",
     "budgetVsActual": "Secciones",
     "savingsGoals": "Metas de ahorro",
-    "moreRecurring": "+{{n}} más"
+    "moreRecurring": "+{{n}} más",
+    "reorderTitle": "Orden de tarjetas del inicio",
+    "reorderHint": "Usa las flechas para cambiar el orden y pulsa Listo para guardar.",
+    "moveUp": "Subir",
+    "moveDown": "Bajar"
   },
   "ai": {
     "title": "Asistente IA Pro",

@@ -133,7 +133,11 @@
     "trendEmpty": "No income or expenses in these months yet.",
     "budgetVsActual": "Secções",
     "savingsGoals": "Metas de poupança",
-    "moreRecurring": "+{{n}} mais"
+    "moreRecurring": "+{{n}} mais",
+    "reorderTitle": "Home cards order",
+    "reorderHint": "Use the arrows to change order, then tap Done to save.",
+    "moveUp": "Move up",
+    "moveDown": "Move down"
   },
   "ai": {
     "title": "Assistente IA Pro",

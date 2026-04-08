@@ -133,7 +133,11 @@
     "trendEmpty": "No income or expenses in these months yet.",
     "budgetVsActual": "الأقسام",
     "savingsGoals": "أهداف الادخار",
-    "moreRecurring": "+{{n}} أخرى"
+    "moreRecurring": "+{{n}} أخرى",
+    "reorderTitle": "Home cards order",
+    "reorderHint": "Use the arrows to change order, then tap Done to save.",
+    "moveUp": "Move up",
+    "moveDown": "Move down"
   },
   "ai": {
     "title": "مساعد ذكاء اصطناعي Pro",

@@ -133,7 +133,11 @@
     "trendEmpty": "No income or expenses in these months yet.",
     "budgetVsActual": "Sezioni",
     "savingsGoals": "Obiettivi di risparmio",
-    "moreRecurring": "+{{n}} in più"
+    "moreRecurring": "+{{n}} in più",
+    "reorderTitle": "Home cards order",
+    "reorderHint": "Use the arrows to change order, then tap Done to save.",
+    "moveUp": "Move up",
+    "moveDown": "Move down"
   },
   "ai": {
     "title": "Assistente IA Pro",

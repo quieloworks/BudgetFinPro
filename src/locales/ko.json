@@ -133,7 +133,11 @@
     "trendEmpty": "No income or expenses in these months yet.",
     "budgetVsActual": "섹션",
     "savingsGoals": "저축 목표",
-    "moreRecurring": "{{n}}개 더"
+    "moreRecurring": "{{n}}개 더",
+    "reorderTitle": "Home cards order",
+    "reorderHint": "Use the arrows to change order, then tap Done to save.",
+    "moveUp": "Move up",
+    "moveDown": "Move down"
   },
   "ai": {
     "title": "AI 도우미 Pro",

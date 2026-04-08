@@ -32,7 +32,12 @@ import { TY, TAB_CONTENT_H } from "../theme/typography";
 import { useAppTheme } from "../theme/ThemeContext";
 import { FREQ_KEYS } from "../constants/frequencies";
 import { SECS } from "../constants/sections";
-import { FINPRO_STORAGE_KEY, LANGUAGE_STORAGE_KEY } from "../constants/storage";
+import {
+  DASHBOARD_WIDGET_IDS,
+  DASHBOARD_WIDGET_ORDER_KEY,
+  FINPRO_STORAGE_KEY,
+  LANGUAGE_STORAGE_KEY,
+} from "../constants/storage";
 import { sortedSupportedLocales } from "../constants/languages";
 import { setAppLanguage } from "../i18n/i18n";
 import { toBcp47Locale } from "../utils/i18nLocale";
@@ -63,6 +68,7 @@ import { Confirm } from "../components/Confirm";
 import { PieChart } from "../components/charts/PieChart";
 import { BarChart } from "../components/charts/BarChart";
 import { LineChart } from "../components/charts/LineChart";
+import { DashboardDraggableWidgets } from "../components/DashboardDraggableWidgets";
 import { SwipeRow } from "../components/SwipeRow";
 import { TxList } from "../components/TxList";
 import { TxForm, TxTypeBar, TxDateField } from "../components/TxModalForm";
@@ -242,6 +248,10 @@ export function FinanceScreen() {
   });
 
   const [tab, setTab] = useState("dashboard");
+  const [dashboardWidgetOrder, setDashboardWidgetOrder] = useState(() => [
+    ...DASHBOARD_WIDGET_IDS,
+  ]);
+  const [dashboardScrollLocked, setDashboardScrollLocked] = useState(false);
   const [txs, setTxs] = useState([]);
   const [budget, setBudget] = useState({});
   const [sections, setSections] = useState(SECS);
@@ -602,6 +612,25 @@ export function FinanceScreen() {
       setStorageHydrated(true);
     })();
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DASHBOARD_WIDGET_ORDER_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        const valid = new Set(DASHBOARD_WIDGET_IDS);
+        if (
+          Array.isArray(parsed) &&
+          parsed.length === DASHBOARD_WIDGET_IDS.length &&
+          parsed.every((id) => typeof id === "string" && valid.has(id))
+        ) {
+          setDashboardWidgetOrder(parsed);
+        }
+      } catch (_) {}
+    })();
+  }, []);
+
   useEffect(() => {
     if (!storageHydrated) return;
     (async () => {
@@ -902,6 +931,15 @@ export function FinanceScreen() {
   );
   const maxTrend = Math.max(...trendData.map((m) => Math.max(m.inc, m.exp)), 1);
   const trendHasAnyData = trendData.some((m) => m.inc > 0 || m.exp > 0);
+
+  const onDashboardWidgetsReorder = useCallback((next: string[]) => {
+    setDashboardWidgetOrder(next);
+    void AsyncStorage.setItem(
+      DASHBOARD_WIDGET_ORDER_KEY,
+      JSON.stringify(next),
+    );
+  }, []);
+
   const TABS = useMemo(
     () => [
       {
@@ -3652,6 +3690,9 @@ export function FinanceScreen() {
 
         <GHScrollView
           style={{ flex: 1 }}
+          scrollEnabled={
+            !(tab === "dashboard" && dashboardScrollLocked)
+          }
           contentContainerStyle={{
             paddingHorizontal: 20,
             paddingTop: mainScrollKbPad.paddingTop,
@@ -3830,472 +3871,23 @@ export function FinanceScreen() {
                 </LinearGradient>
               </Pressable>
 
-              {/* Accounts */}
-              <Pressable
-                onPress={() => openDrill("accounts")}
-                style={{ ...cS, padding: 0, overflow: "hidden" }}
-              >
-                <View
-                  style={{
-                    paddingTop: 14,
-                    paddingHorizontal: 20,
-                    paddingBottom: 8,
-                    borderBottomWidth: 1,
-                    borderBottomColor: C.border,
-                    flexDirection: "row",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <Text
-                    style={{ fontSize: 13, fontWeight: "500", color: C.text }}
-                  >
-                    {t("dashboard.accountsTitle")}{" "}
-                    <Text
-                      style={{
-                        fontSize: 11,
-                        color: C.muted,
-                        fontWeight: "400",
-                      }}
-                    >
-                      · {t("dashboard.defaultAccountShort")}{" "}
-                      <Text style={{ color: C.green }}>{defaultAccount}</Text>
-                    </Text>
-                  </Text>
-                  <Text style={{ color: C.hint, fontSize: 14 }}>›</Text>
-                </View>
-                <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-                  {byAccount.map((a, i) => (
-                    <View
-                      key={a.a}
-                      style={{
-                        width: "50%",
-                        paddingVertical: 14,
-                        paddingHorizontal: 16,
-                        borderRightWidth: i % 2 === 0 ? 1 : 0,
-                        borderRightColor: C.border,
-                        borderBottomWidth: i < byAccount.length - 2 ? 1 : 0,
-                        borderBottomColor: C.border,
-                      }}
-                    >
-                      <Text
-                        style={{
-                          fontSize: 10,
-                          color: C.muted,
-                          letterSpacing: 0.85,
-                          textTransform: "uppercase",
-                          marginBottom: 6,
-                        }}
-                      >
-                        {a.a}
-                        {defaultAccount === a.a ? (
-                          <Text style={{ marginLeft: 5, color: C.green }}>
-                            ✓
-                          </Text>
-                        ) : null}
-                      </Text>
-                      <Text
-                        style={{
-                          fontSize: 17,
-                          fontWeight: 500,
-                          color: a.bal >= 0 ? C.green : C.red,
-                        }}
-                      >
-                        {a.bal < 0 ? "-" : ""}
-                        {fmt(a.bal)}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </Pressable>
-
-              {/* Trend */}
-              <Pressable
-                onPress={() => openDrill("trend")}
-                style={{ ...cS, position: "relative" }}
-              >
-                <Text
-                  style={{
-                    position: "absolute",
-                    top: 16,
-                    right: 16,
-                    color: C.hint,
-                    fontSize: 14,
-                  }}
-                >
-                  ›
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "500",
-                    marginBottom: 14,
-                    color: C.text,
-                  }}
-                >
-                  {t("dashboard.monthlyTrend")}
-                </Text>
-                <View
-                  style={{
-                    flexDirection: "row",
-                    gap: 8,
-                    alignItems: "flex-end",
-                    minHeight: trendHasAnyData ? 72 : 40,
-                  }}
-                >
-                  {trendHasAnyData ? (
-                    trendData.map((m, i) => {
-                      const hInc =
-                        maxTrend > 0 ? (m.inc / maxTrend) * 56 : 0;
-                      const hExp =
-                        maxTrend > 0 ? (m.exp / maxTrend) * 56 : 0;
-                      const barInc =
-                        m.inc > 0 ? Math.max(2, hInc) : 0;
-                      const barExp =
-                        m.exp > 0 ? Math.max(2, hExp) : 0;
-                      return (
-                        <View
-                          key={i}
-                          style={{
-                            flex: 1,
-                            flexDirection: "column",
-                            alignItems: "center",
-                            gap: 3,
-                          }}
-                        >
-                          <View
-                            style={{
-                              width: "100%",
-                              flexDirection: "row",
-                              gap: 3,
-                              alignItems: "flex-end",
-                              justifyContent: "center",
-                              height: 56,
-                            }}
-                          >
-                            <View
-                              style={{
-                                width: "47%",
-                                borderTopLeftRadius: 4,
-                                borderTopRightRadius: 4,
-                                height: barInc,
-                                backgroundColor: C.green,
-                                opacity: 0.9,
-                              }}
-                            />
-                            <View
-                              style={{
-                                width: "47%",
-                                borderTopLeftRadius: 4,
-                                borderTopRightRadius: 4,
-                                height: barExp,
-                                backgroundColor: C.red,
-                                opacity: 0.9,
-                              }}
-                            />
-                          </View>
-                          <Text style={{ fontSize: 10, color: C.muted }}>
-                            {m.label}
-                          </Text>
-                        </View>
-                      );
-                    })
-                  ) : (
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        color: C.muted,
-                        paddingVertical: 8,
-                        width: "100%",
-                        textAlign: "center",
-                      }}
-                    >
-                      {t("dashboard.trendEmpty")}
-                    </Text>
-                  )}
-                </View>
-                <View style={{ flexDirection: "row", gap: 14, marginTop: 10 }}>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 5,
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 2,
-                        backgroundColor: C.green,
-                      }}
-                    />
-                    <Text style={{ fontSize: 11, color: C.muted }}>
-                      {t("balance.income")}
-                    </Text>
-                  </View>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 5,
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 2,
-                        backgroundColor: C.red,
-                      }}
-                    />
-                    <Text style={{ fontSize: 11, color: C.muted }}>
-                      {t("balance.expense")}
-                    </Text>
-                  </View>
-                </View>
-              </Pressable>
-
-              {/* Budget */}
-              <Pressable
-                onPress={() => openDrill("budget")}
-                style={{ ...cS, position: "relative" }}
-              >
-                <Text
-                  style={{
-                    position: "absolute",
-                    top: 16,
-                    right: 16,
-                    color: C.hint,
-                    fontSize: 14,
-                  }}
-                >
-                  ›
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "500",
-                    marginBottom: 14,
-                    color: C.text,
-                  }}
-                >
-                  {t("dashboard.budgetVsActual")}
-                </Text>
-                {dashboardBudgetRows.map((b) => {
-                    const pct =
-                      b.b > 0 ? Math.min(100, (b.spent / b.b) * 100) : 100;
-                    const over = b.spent > b.b && b.b > 0;
-                    return (
-                      <View key={b.s} style={{ marginBottom: 12 }}>
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            justifyContent: "space-between",
-                            marginBottom: 5,
-                          }}
-                        >
-                          <View
-                            style={{
-                              flexDirection: "row",
-                              alignItems: "center",
-                              gap: 6,
-                            }}
-                          >
-                            <View
-                              style={{
-                                width: 6,
-                                height: 6,
-                                borderRadius: 3,
-                                backgroundColor: sectionDotColor(b.s, C),
-                              }}
-                            />
-                            <Text style={{ fontSize: 14, color: C.text }}>
-                              {b.s}
-                            </Text>
-                          </View>
-                          <Text style={{ color: over ? C.red : C.muted }}>
-                            {fmt(b.spent)}{" "}
-                            <Text style={{ color: C.hint }}>/ {fmt(b.b)}</Text>
-                          </Text>
-                        </View>
-                        <View
-                          style={{
-                            height: 5,
-                            backgroundColor: C.bg3,
-                            borderRadius: 4,
-                            overflow: "hidden",
-                          }}
-                        >
-                          <View
-                            style={{
-                              width: pct + "%",
-                              height: "100%",
-                              backgroundColor: over ? C.red : C.green,
-                              borderRadius: 4,
-                            }}
-                          />
-                        </View>
-                      </View>
-                    );
-                  })}
-              </Pressable>
-
-              {/* Goals */}
-              <Pressable
-                onPress={() => openDrill("goals")}
-                style={{ ...cS, position: "relative" }}
-              >
-                <Text
-                  style={{
-                    position: "absolute",
-                    top: 16,
-                    right: 16,
-                    color: C.hint,
-                    fontSize: 14,
-                  }}
-                >
-                  ›
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "500",
-                    marginBottom: 12,
-                    color: C.text,
-                  }}
-                >
-                  {t("dashboard.savingsGoals")}
-                </Text>
-                {goals.slice(0, 2).map((g) => {
-                  const pct = Math.min(
-                    100,
-                    Math.round((g.saved / g.target) * 100),
-                  );
-                  return (
-                    <View key={g.id} style={{ marginBottom: 12 }}>
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          justifyContent: "space-between",
-                          marginBottom: 5,
-                        }}
-                      >
-                        <Text style={{ fontSize: 12, color: C.text }}>
-                          {g.name}
-                        </Text>
-                        <Text style={{ color: C.muted, fontSize: 12 }}>
-                          {fmt(g.saved)}{" "}
-                          <Text style={{ color: C.hint }}>
-                            / {fmt(g.target)}
-                          </Text>
-                        </Text>
-                      </View>
-                      <View
-                        style={{
-                          height: 5,
-                          backgroundColor: C.bg3,
-                          borderRadius: 4,
-                          overflow: "hidden",
-                        }}
-                      >
-                        <View
-                          style={{
-                            width: pct + "%",
-                            height: "100%",
-                            backgroundColor: g.color,
-                            borderRadius: 4,
-                          }}
-                        />
-                      </View>
-                      <Text
-                        style={{ fontSize: 10, color: C.muted, marginTop: 3 }}
-                      >
-                        {t("goals.limitProgress", {
-                          pct,
-                          date: g.deadline,
-                        })}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </Pressable>
-
-              {/* Recurring */}
-              <Pressable
-                onPress={() => openDrill("recurring")}
-                style={{ ...cS, position: "relative" }}
-              >
-                <Text
-                  style={{
-                    position: "absolute",
-                    top: 16,
-                    right: 16,
-                    color: C.hint,
-                    fontSize: 14,
-                  }}
-                >
-                  ›
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "500",
-                    marginBottom: 12,
-                    color: C.text,
-                  }}
-                >
-                  {t("dashboard.recurringCard")}
-                </Text>
-                {recTxs.slice(0, 4).map((rec) => (
-                  <View
-                    key={rec.id}
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      paddingVertical: 8,
-                      borderBottomWidth: 1,
-                      borderBottomColor: C.border,
-                    }}
-                  >
-                    <View>
-                      <Text style={{ fontSize: 13, color: C.text }}>
-                        {rec.desc}
-                      </Text>
-                      <Text
-                        style={{ fontSize: 11, color: C.muted, marginTop: 2 }}
-                      >
-                        {rec.section} ·{" "}
-                        {t("freq." + (rec.freq || "monthly"))}
-                      </Text>
-                    </View>
-                    <Text
-                      style={{
-                        fontWeight: "500",
-                        color: rec.type === "income" ? C.green : C.red,
-                      }}
-                    >
-                      {rec.type === "income" ? "+" : "-"}
-                      {fmt(rec.amount)}
-                    </Text>
-                  </View>
-                ))}
-                {recTxs.length > 4 && (
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: C.muted,
-                      paddingTop: 8,
-                      textAlign: "center",
-                    }}
-                  >
-                    {t("dashboard.moreRecurring", {
-                      n: recTxs.length - 4,
-                    })}
-                  </Text>
-                )}
-              </Pressable>
+              <DashboardDraggableWidgets
+                order={dashboardWidgetOrder}
+                onReorder={onDashboardWidgetsReorder}
+                onScrollLockChange={setDashboardScrollLocked}
+                cS={cS}
+                C={C}
+                t={t}
+                openDrill={openDrill}
+                byAccount={byAccount}
+                defaultAccount={defaultAccount}
+                trendData={trendData}
+                trendHasAnyData={trendHasAnyData}
+                maxTrend={maxTrend}
+                dashboardBudgetRows={dashboardBudgetRows}
+                goals={goals}
+                recTxs={recTxs}
+              />
             </View>
           )}
 

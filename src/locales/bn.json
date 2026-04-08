@@ -133,7 +133,11 @@
     "trendEmpty": "No income or expenses in these months yet.",
     "budgetVsActual": "বিভাগ",
     "savingsGoals": "সঞ্চয় লক্ষ্য",
-    "moreRecurring": "+{{n}} আরও"
+    "moreRecurring": "+{{n}} আরও",
+    "reorderTitle": "Home cards order",
+    "reorderHint": "Use the arrows to change order, then tap Done to save.",
+    "moveUp": "Move up",
+    "moveDown": "Move down"
   },
   "ai": {
     "title": "AI সহকারী Pro",
