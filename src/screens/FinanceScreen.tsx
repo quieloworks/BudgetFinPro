@@ -38,7 +38,15 @@ import {
   FINPRO_STORAGE_KEY,
   LANGUAGE_STORAGE_KEY,
 } from "../constants/storage";
-import { sortedSupportedLocales } from "../constants/languages";
+import {
+  sortedSupportedLocales,
+  DEFAULT_LOCALE,
+  isSupportedLocale,
+} from "../constants/languages";
+import {
+  ACCOUNT_CURRENCY_CODES,
+  defaultCurrencyForLocale,
+} from "../constants/accountCurrencies";
 import { setAppLanguage } from "../i18n/i18n";
 import { toBcp47Locale } from "../utils/i18nLocale";
 import {
@@ -69,6 +77,8 @@ import { PieChart } from "../components/charts/PieChart";
 import { BarChart } from "../components/charts/BarChart";
 import { LineChart } from "../components/charts/LineChart";
 import { DashboardDraggableWidgets } from "../components/DashboardDraggableWidgets";
+import { DrillBudgetPanel } from "./DrillBudgetPanel";
+import { DrillCreditsPanel } from "./DrillCreditsPanel";
 import { SwipeRow } from "../components/SwipeRow";
 import { TxList } from "../components/TxList";
 import { TxForm, TxTypeBar, TxDateField } from "../components/TxModalForm";
@@ -82,6 +92,11 @@ const AI_WELCOME_PLACEHOLDER = "__AI_WELCOME__";
 function normSec(s) {
   if (s == null) return "";
   return typeof s === "string" ? s.trim() : String(s).trim();
+}
+
+function appLocaleFromI18nLang(lang) {
+  const base = String(lang || "").split("-")[0].toLowerCase();
+  return isSupportedLocale(base) ? base : DEFAULT_LOCALE;
 }
 
 function dateStrLocal(d) {
@@ -259,6 +274,7 @@ export function FinanceScreen() {
   const [archivedAccounts, setArchivedAccounts] = useState([]);
   const [defaultAccount, setDefaultAccount] = useState("");
   const [goals, setGoals] = useState([]);
+  const [credits, setCredits] = useState([]);
   const [dismissedAlerts, setDismissedAlerts] = useState([]);
   const [goalInputs, setGoalInputs] = useState({});
   const [alertRules, setAlertRules] = useState([]);
@@ -272,6 +288,16 @@ export function FinanceScreen() {
   const [budgetRenSec, setBudgetRenSec] = useState(null);
   const [budgetRenSecText, setBudgetRenSecText] = useState("");
   const [budgetNewSecName, setBudgetNewSecName] = useState("");
+  const [budgetNewSecBudgetDigits, setBudgetNewSecBudgetDigits] = useState("");
+  const [budgetShowNewSectionForm, setBudgetShowNewSectionForm] = useState(false);
+  const [sectionBudgetDigits, setSectionBudgetDigits] = useState({});
+  const prevBudgetManageRef = useRef(false);
+  const [accountMeta, setAccountMeta] = useState({});
+  const [accCurrency, setAccCurrency] = useState(() =>
+    defaultCurrencyForLocale(DEFAULT_LOCALE),
+  );
+  const [accInitialDigits, setAccInitialDigits] = useState("");
+  const [accNotes, setAccNotes] = useState("");
   const [goalModal, setGoalModal] = useState(null);
   const [goalForm, setGoalForm] = useState({
     name: "",
@@ -301,6 +327,9 @@ export function FinanceScreen() {
       setBudgetRenSec(null);
       setBudgetRenSecText("");
       setBudgetNewSecName("");
+      setBudgetNewSecBudgetDigits("");
+      setBudgetShowNewSectionForm(false);
+      setSectionBudgetDigits({});
       setSettingsOpen(false);
       drawerProgress.setValue(0);
       setDrawerBackdropBlocking(true);
@@ -318,6 +347,9 @@ export function FinanceScreen() {
     setBudgetRenSec(null);
     setBudgetRenSecText("");
     setBudgetNewSecName("");
+    setBudgetNewSecBudgetDigits("");
+    setBudgetShowNewSectionForm(false);
+    setSectionBudgetDigits({});
   }, []);
 
   /* TX modal */
@@ -490,6 +522,8 @@ export function FinanceScreen() {
       }
       if (accModal) {
         setAccModal(null);
+        setAccInitialDigits("");
+        setAccNotes("");
         return true;
       }
       if (txModal) {
@@ -537,6 +571,12 @@ export function FinanceScreen() {
           setBudgetRenSec(null);
           return true;
         }
+        if (budgetShowNewSectionForm) {
+          setBudgetShowNewSectionForm(false);
+          setBudgetNewSecName("");
+          setBudgetNewSecBudgetDigits("");
+          return true;
+        }
         if (budgetManageSections) {
           setBudgetManageSections(false);
           return true;
@@ -545,7 +585,11 @@ export function FinanceScreen() {
         return true;
       }
 
-      if (drilldown === "trend" || drilldown === "goals") {
+      if (
+        drilldown === "trend" ||
+        drilldown === "goals" ||
+        drilldown === "credits"
+      ) {
         if (drillSub) {
           setDrillSub(null);
           return true;
@@ -578,6 +622,7 @@ export function FinanceScreen() {
     accountsEditMode,
     budgetRenSec,
     budgetManageSections,
+    budgetShowNewSectionForm,
     closeDrill,
     closeSettingsDrawer,
   ]);
@@ -601,12 +646,15 @@ export function FinanceScreen() {
           if (p.sections) setSections(p.sections);
           if (p.accounts) setAccounts(p.accounts);
           if (p.goals) setGoals(p.goals);
+          if (Array.isArray(p.credits)) setCredits(p.credits);
           if (p.defaultAccount) setDefaultAccount(p.defaultAccount);
           if (p.archivedAccounts) setArchivedAccounts(p.archivedAccounts);
           if (Array.isArray(p.alertRules)) setAlertRules(p.alertRules);
           if (Array.isArray(p.dismissedAlerts))
             setDismissedAlerts(p.dismissedAlerts);
           if (p.archivedSections) setArchivedSections(p.archivedSections);
+          if (p.accountMeta && typeof p.accountMeta === "object")
+            setAccountMeta(p.accountMeta);
         }
       } catch (e) {}
       setStorageHydrated(true);
@@ -643,11 +691,13 @@ export function FinanceScreen() {
             sections,
             accounts,
             goals,
+            credits,
             defaultAccount,
             archivedAccounts,
             alertRules,
             dismissedAlerts,
             archivedSections,
+            accountMeta,
           }),
         );
       } catch (e) {}
@@ -659,12 +709,30 @@ export function FinanceScreen() {
     sections,
     accounts,
     goals,
+    credits,
     defaultAccount,
     archivedAccounts,
     alertRules,
     dismissedAlerts,
     archivedSections,
+    accountMeta,
   ]);
+
+  useEffect(() => {
+    if (budgetManageSections && !prevBudgetManageRef.current) {
+      const next = {};
+      sections.forEach((s) => {
+        if (s === "Transferencias") return;
+        next[s] = digitsFromNumber(budget[s] || 0);
+      });
+      setSectionBudgetDigits(next);
+      setBudgetShowNewSectionForm(false);
+      setBudgetNewSecName("");
+      setBudgetNewSecBudgetDigits("");
+    }
+    if (!budgetManageSections) setBudgetShowNewSectionForm(false);
+    prevBudgetManageRef.current = budgetManageSections;
+  }, [budgetManageSections, sections, budget]);
 
   /** Secciones para clasificar gasto/ingreso (nunca "Transferencias"). */
   const expenseSections = useMemo(
@@ -703,11 +771,11 @@ export function FinanceScreen() {
   const reportByAccount = useMemo(() => {
     const accountBalMap = {};
     accounts.forEach((a) => {
-      accountBalMap[a] = 0;
+      accountBalMap[a] = accountMeta[a]?.initialAmount ?? 0;
     });
     reportTxs.forEach((tx) => applyTxToAccounts(accountBalMap, tx));
     return accounts.map((a) => ({ a, bal: accountBalMap[a] || 0 }));
-  }, [reportTxs, accounts]);
+  }, [reportTxs, accounts, accountMeta]);
 
   /** Transacciones del informe por sección (todas, no solo recurrentes). */
   const reportSectionTxs = useMemo(() => {
@@ -770,7 +838,7 @@ export function FinanceScreen() {
   );
   const accountBalMap = {};
   accounts.forEach((a) => {
-    accountBalMap[a] = 0;
+    accountBalMap[a] = accountMeta[a]?.initialAmount ?? 0;
   });
   txs.forEach((t) => applyTxToAccounts(accountBalMap, t));
   const byAccount = accounts.map((a) => ({ a, bal: accountBalMap[a] || 0 }));
@@ -779,7 +847,7 @@ export function FinanceScreen() {
   const alerts = useMemo(() => {
     const balances = {};
     accounts.forEach((a) => {
-      balances[a] = 0;
+      balances[a] = accountMeta[a]?.initialAmount ?? 0;
     });
     txs.forEach((t) => applyTxToAccounts(balances, t));
     return computeAlerts({
@@ -791,7 +859,7 @@ export function FinanceScreen() {
       balances,
       rules: alertRules,
     }).filter((a) => !dismissedAlerts.includes(a.id));
-  }, [txs, accounts, sections, budget, alertRules, dismissedAlerts]);
+  }, [txs, accounts, sections, budget, alertRules, dismissedAlerts, accountMeta]);
 
   /* ── Balance report helpers ── */
   const tfLabel = useMemo(
@@ -1180,17 +1248,49 @@ export function FinanceScreen() {
   /* ── Account actions ── */
   const saveAcc = () => {
     if (!accForm.trim()) return;
+    const name = accForm.trim();
+    const loc = appLocaleFromI18nLang(i18n.language);
+    const cur =
+      ACCOUNT_CURRENCY_CODES.includes(accCurrency) ?
+        accCurrency
+      : defaultCurrencyForLocale(loc);
+    const initParsed = parseMoneyDigits(accInitialDigits);
+    const initOk = !Number.isNaN(initParsed) && initParsed !== 0;
+    const notesTrim = (accNotes || "").trim();
+    const nextMetaEntry = () => {
+      const e = { currency: cur };
+      if (notesTrim) e.notes = notesTrim;
+      if (initOk) e.initialAmount = initParsed;
+      return e;
+    };
     if (accModal?.mode === "add") {
-      if (!accounts.includes(accForm.trim()))
-        setAccounts((p) => [...p, accForm.trim()]);
+      if (!accounts.includes(name)) {
+        setAccounts((p) => [...p, name]);
+        setAccountMeta((p) => ({ ...p, [name]: nextMetaEntry() }));
+      }
     } else if (accModal?.mode === "edit") {
-      setAccounts((p) =>
-        p.map((a) => (a === accModal.acc ? accForm.trim() : a)),
-      );
-      if (defaultAccount === accModal.acc) setDefaultAccount(accForm.trim());
+      const old = accModal.acc;
+      setAccounts((p) => p.map((a) => (a === old ? name : a)));
+      if (defaultAccount === old) setDefaultAccount(name);
+      setAccountMeta((p) => {
+        const m = { ...p };
+        const prev = m[old] || {};
+        delete m[old];
+        m[name] = {
+          ...prev,
+          currency: cur,
+          ...(notesTrim ? { notes: notesTrim } : {}),
+          ...(initOk ? { initialAmount: initParsed } : {}),
+        };
+        if (!m[name].notes) delete m[name].notes;
+        if (!initOk) delete m[name].initialAmount;
+        return m;
+      });
     }
     setAccModal(null);
     setAccForm("");
+    setAccInitialDigits("");
+    setAccNotes("");
   };
   const archiveAcc = (acc) => {
     setConfirmDialog({
@@ -1211,6 +1311,11 @@ export function FinanceScreen() {
       confirmLabel: t("confirm.delete"),
       onConfirm: () => {
         setAccounts((p) => p.filter((a) => a !== acc));
+        setAccountMeta((m) => {
+          const o = { ...m };
+          delete o[acc];
+          return o;
+        });
         if (defaultAccount === acc)
           setDefaultAccount(accounts.find((a) => a !== acc) || "");
         setAccModal(null);
@@ -1506,6 +1611,7 @@ export function FinanceScreen() {
         chartMonthData,
         balTxs,
         goals,
+        credits: balCredits,
       } = p;
       return (
         <DrillScreen title={t("drill.balance")} onBack={closeDrill}>
@@ -1855,6 +1961,7 @@ export function FinanceScreen() {
         <TxList
           txs={[...balTxs].sort((a, b) => b.date.localeCompare(a.date))}
           goals={goals}
+          credits={balCredits}
           emptyMsg={t("txList.emptyPeriod")}
         />
       </View>
@@ -1954,7 +2061,7 @@ export function FinanceScreen() {
             >
               {t("common.movements")}
             </Text>
-            <TxList txs={accTxs} goals={goals} />
+            <TxList txs={accTxs} goals={goals} credits={credits} />
           </View>
         </DrillScreen>
       );
@@ -1997,6 +2104,13 @@ export function FinanceScreen() {
             <Pressable
               onPress={() => {
                 setAccForm("");
+                setAccCurrency(
+                  defaultCurrencyForLocale(
+                    appLocaleFromI18nLang(i18n.language),
+                  ),
+                );
+                setAccInitialDigits("");
+                setAccNotes("");
                 setAccModal({ mode: "add" });
               }}
               style={{
@@ -2124,7 +2238,18 @@ export function FinanceScreen() {
                     )}
                     <Pressable
                       onPress={() => {
+                        const meta = accountMeta[a] || {};
                         setAccForm(a);
+                        setAccCurrency(
+                          meta.currency ||
+                            defaultCurrencyForLocale(
+                              appLocaleFromI18nLang(i18n.language),
+                            ),
+                        );
+                        setAccInitialDigits(
+                          digitsFromNumber(meta.initialAmount),
+                        );
+                        setAccNotes(meta.notes || "");
                         setAccModal({ mode: "edit", acc: a });
                       }}
                       style={{
@@ -2339,7 +2464,7 @@ export function FinanceScreen() {
             >
               {t("common.movements")}
             </Text>
-            <TxList txs={mTxs} goals={goals} />
+            <TxList txs={mTxs} goals={goals} credits={credits} />
           </View>
         </DrillScreen>
       );
@@ -2452,536 +2577,6 @@ export function FinanceScreen() {
             </Pressable>
           );
         })}
-      </DrillScreen>
-    );
-  };
-
-  /* BUDGET */
-  const DrillBudget = () => {
-    const { t } = useTranslation();
-    const budgetMonthOpts = useMemo(() => {
-      const rows = rollingChartMonthBucketsNewestFirst(12).map(({ key }) => {
-        const parts = key.split("-");
-        const y = Number(parts[0]);
-        const mo = Number(parts[1]);
-        const label = new Date(y, mo - 1, 1).toLocaleDateString(localeTag, {
-          month: "short",
-          year: "2-digit",
-        });
-        return { key, label };
-      });
-      return [{ key: null, label: t("budget.monthAll") }, ...rows];
-    }, [localeTag, t]);
-    const addBudgetSection = () => {
-      const n = (budgetNewSecName || "").trim();
-      if (!n || sections.includes(n)) return;
-      setSections((p) => [...p, n]);
-      setBudget((b) => ({ ...b, [n]: 0 }));
-      setBudgetNewSecName("");
-    };
-    const archiveBudgetSection = (s) => {
-      if (s === "Transferencias" || s === "Otros") return;
-      setConfirmDialog({
-        msg: t("budget.archiveSectionMsg", { name: s }),
-        confirmLabel: t("accounts.archive"),
-        onConfirm: () => {
-          setSections((p) => p.filter((x) => x !== s));
-          setArchivedSections((p) => [...p, s]);
-          setBudget((b) => {
-            const o = { ...b };
-            delete o[s];
-            return o;
-          });
-        },
-      });
-    };
-    const deleteBudgetSection = (s) => {
-      if (s === "Transferencias" || sections.length < 2) return;
-      setConfirmDialog({
-        msg: t("budget.deleteSectionMsg", {
-          name: s,
-          target: t("sections.otherFallback"),
-        }),
-        confirmLabel: t("confirm.delete"),
-        onConfirm: () => {
-          setTxs((p) =>
-            p.map((t) => (t.section === s ? { ...t, section: "Otros" } : t)),
-          );
-          setSections((p) => p.filter((x) => x !== s));
-          setBudget((b) => {
-            const o = { ...b };
-            delete o[s];
-            return o;
-          });
-        },
-      });
-    };
-    const applyBudgetRename = (oldName, newName) => {
-      const nn = (newName || "").trim();
-      if (!nn || nn === oldName || sections.includes(nn)) return;
-      setSections((p) => p.map((x) => (x === oldName ? nn : x)));
-      setBudget((b) => {
-        const o = { ...b };
-        o[nn] = o[oldName] ?? 0;
-        delete o[oldName];
-        return o;
-      });
-      setTxs((p) =>
-        p.map((t) => (t.section === oldName ? { ...t, section: nn } : t)),
-      );
-      setGoals((p) =>
-        p.map((g) => (g.name === oldName ? { ...g, name: nn } : g)),
-      );
-      setBudgetRenSec(null);
-    };
-    if (drillSub) {
-      const secTxs = [...txs]
-        .filter(
-          (t) =>
-            t.type === "expense" &&
-            t.section === drillSub &&
-            (!budgetDetailMonth ||
-              yearMonthKeyFromTxDate(t.date) === budgetDetailMonth),
-        )
-        .sort((a, b) => b.date.localeCompare(a.date));
-      const total = secTxs.reduce(
-        (s, t) => s + (Number(t.amount) || 0),
-        0,
-      );
-      const bgt = budget[drillSub] || 0;
-      return (
-        <DrillScreen
-          title={drillSub}
-          onBack={() => {
-            setDrillSub(null);
-            setBudgetDetailMonth(null);
-          }}
-        >
-          <GHScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={{ marginBottom: 12 }}
-            contentContainerStyle={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
-              paddingBottom: 4,
-            }}
-          >
-            {budgetMonthOpts.map((m) => (
-              <Pressable
-                key={String(m.key)}
-                style={pl(
-                  budgetDetailMonth === m.key ||
-                    (m.key === null && !budgetDetailMonth),
-                )}
-                onPress={() => setBudgetDetailMonth(m.key)}
-              >
-                <Text
-                  style={{
-                    fontSize: 12,
-                    color: pl(
-                      budgetDetailMonth === m.key ||
-                        (m.key === null && !budgetDetailMonth),
-                    ).color,
-                  }}
-                >
-                  {m.label}
-                </Text>
-              </Pressable>
-            ))}
-          </GHScrollView>
-          <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
-            <View style={mSf}>
-              <Text
-                style={{
-                  fontSize: 10,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.65,
-                  marginBottom: 4,
-                }}
-              >
-                {t("budget.spent")}
-              </Text>
-              <Text
-                style={{
-                  fontWeight: 500,
-                  color: total > bgt && bgt > 0 ? C.red : C.text,
-                }}
-              >
-                {fmt(total)}
-              </Text>
-            </View>
-            <View style={mSf}>
-              <Text
-                style={{
-                  fontSize: 10,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.65,
-                  marginBottom: 4,
-                }}
-              >
-                {t("budget.budgetLabel")}
-              </Text>
-              <Text style={{ fontWeight: 500, color: C.text }}>{fmt(bgt)}</Text>
-            </View>
-            <View style={mSf}>
-              <Text
-                style={{
-                  fontSize: 10,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.65,
-                  marginBottom: 4,
-                }}
-              >
-                {total > bgt ? t("budget.exceeded") : t("budget.available")}
-              </Text>
-              <Text
-                style={{
-                  fontWeight: 500,
-                  color: total > bgt ? C.red : C.green,
-                }}
-              >
-                {fmt(Math.abs(bgt - total))}
-              </Text>
-            </View>
-          </View>
-          <View style={cS}>
-            <Text
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                marginBottom: 10,
-                color: C.text,
-              }}
-            >
-              {t("budget.transactionsHeading")}
-            </Text>
-            <TxList
-              txs={secTxs}
-              goals={goals}
-              emptyMsg={t("budget.emptyCategory")}
-            />
-          </View>
-        </DrillScreen>
-      );
-    }
-    return (
-      <DrillScreen
-        title={t("budget.vsActual")}
-        onBack={() => {
-          if (budgetRenSec) {
-            setBudgetRenSec(null);
-            return;
-          }
-          if (budgetManageSections) {
-            setBudgetManageSections(false);
-            return;
-          }
-          closeDrill();
-        }}
-        action={
-          <Pressable
-            onPress={() => setBudgetManageSections((m) => !m)}
-            style={{
-              paddingVertical: 6,
-              paddingHorizontal: 12,
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: budgetManageSections ? C.blue : C.border,
-              backgroundColor: budgetManageSections ? C.blueBg : C.bg3,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 12,
-                color: budgetManageSections ? C.blue : C.muted,
-              }}
-            >
-              {budgetManageSections ? t("budget.done") : t("budget.editSections")}
-            </Text>
-          </Pressable>
-        }
-      >
-        {budgetManageSections && (
-          <View style={{ marginBottom: 16 }}>
-            {budgetRenSec && (
-              <View style={{ ...cS, marginBottom: 12 }}>
-                <Text style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
-                  {t("budget.renameSectionTitle", { name: budgetRenSec })}
-                </Text>
-                <TextInput
-                  value={budgetRenSecText}
-                  onChangeText={setBudgetRenSecText}
-                  style={{ ...iS, marginBottom: 10 }}
-                />
-                <View style={{ flexDirection: "row", gap: 8 }}>
-                  <Pressable
-                    onPress={() =>
-                      applyBudgetRename(budgetRenSec, budgetRenSecText)
-                    }
-                    style={{
-                      flex: 1,
-                      paddingVertical: 10,
-                      borderRadius: 10,
-                      backgroundColor: C.blue,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        textAlign: "center",
-                        color: C.onPrimary,
-                        fontSize: 13,
-                      }}
-                    >
-                      {t("common.save")}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setBudgetRenSec(null)}
-                    style={{
-                      flex: 1,
-                      paddingVertical: 10,
-                      borderRadius: 10,
-                      borderWidth: 1,
-                      borderColor: C.border,
-                      backgroundColor: C.bg3,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        textAlign: "center",
-                        color: C.muted,
-                        fontSize: 13,
-                      }}
-                    >
-                      {t("common.cancel")}
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-            )}
-            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
-              <TextInput
-                value={budgetNewSecName}
-                onChangeText={setBudgetNewSecName}
-                style={{ flex: 1, ...iS }}
-              />
-              <Pressable
-                onPress={addBudgetSection}
-                style={{
-                  paddingVertical: 10,
-                  paddingHorizontal: 16,
-                  borderRadius: 10,
-                  backgroundColor: C.green,
-                }}
-              >
-                <Text style={{ color: C.onPrimary, fontWeight: "500" }}>+</Text>
-              </Pressable>
-            </View>
-            {sections
-              .filter((s) => s !== "Transferencias")
-              .map((s) => (
-                <View
-                  key={s}
-                  style={{ ...cS, marginBottom: 8, paddingVertical: 12 }}
-                >
-                  <Text
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 500,
-                      marginBottom: 10,
-                      color: C.text,
-                    }}
-                  >
-                    {s}
-                  </Text>
-                  <View
-                    style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
-                  >
-                    <Pressable
-                      onPress={() => {
-                        setBudgetRenSec(s);
-                        setBudgetRenSecText(s);
-                      }}
-                      style={{
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        borderWidth: 1,
-                        borderColor: C.border,
-                        backgroundColor: C.bg3,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, color: C.muted }}>
-                        {t("budget.rename")}
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => archiveBudgetSection(s)}
-                      style={{
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        borderWidth: 1,
-                        borderColor: C.gold,
-                        backgroundColor: C.goldBg,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, color: C.gold }}>
-                        {t("accounts.archive")}
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => deleteBudgetSection(s)}
-                      style={{
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        borderWidth: 1,
-                        borderColor: C.redBorder,
-                        backgroundColor: C.redBg,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, color: C.red }}>
-                        {t("confirm.delete")}
-                      </Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))}
-            {archivedSections.length > 0 && (
-              <View style={{ marginTop: 12 }}>
-                <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-                  {t("accounts.archived")}
-                </Text>
-                {archivedSections.map((s) => (
-                  <View
-                    key={s}
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 6,
-                      paddingVertical: 8,
-                      paddingHorizontal: 12,
-                      backgroundColor: C.bg3,
-                      borderRadius: 10,
-                    }}
-                  >
-                    <Text style={{ fontSize: 13, color: C.muted }}>{s}</Text>
-                    <Pressable
-                      onPress={() => {
-                        setArchivedSections((p) => p.filter((x) => x !== s));
-                        setSections((p) => [...p, s]);
-                        setBudget((b) => ({ ...b, [s]: b[s] ?? 0 }));
-                      }}
-                      style={{
-                        paddingVertical: 5,
-                        paddingHorizontal: 12,
-                        borderRadius: 8,
-                        borderWidth: 1,
-                        borderColor: C.green,
-                        backgroundColor: C.greenBg,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, color: C.green }}>
-                        {t("accounts.restore")}
-                      </Text>
-                    </Pressable>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-        {!budgetManageSections &&
-          dashboardBudgetRows.map((b) => {
-              const pct = b.b > 0 ? Math.min(100, (b.spent / b.b) * 100) : 100;
-              const over = b.spent > b.b && b.b > 0;
-              return (
-                <Pressable
-                  key={b.s}
-                  style={{ ...cS, marginBottom: 10 }}
-                  onPress={() => {
-                    setDrillSub(b.s);
-                    setBudgetDetailMonth(null);
-                  }}
-                >
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                      marginBottom: 8,
-                    }}
-                  >
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      <View
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: 4,
-                          backgroundColor: sectionDotColor(b.s, C),
-                        }}
-                      />
-                      <Text style={{ fontSize: 13, color: C.text }}>{b.s}</Text>
-                    </View>
-                    <Text style={{ color: over ? C.red : C.muted }}>
-                      {fmt(b.spent)}{" "}
-                      <Text style={{ color: C.hint }}>/ {fmt(b.b)}</Text>
-                    </Text>
-                  </View>
-                  <View
-                    style={{
-                      height: 6,
-                      backgroundColor: C.bg3,
-                      borderRadius: 4,
-                      overflow: "hidden",
-                      marginBottom: 6,
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: pct + "%",
-                        height: "100%",
-                        backgroundColor: over ? C.red : C.green,
-                        borderRadius: 4,
-                      }}
-                    />
-                  </View>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <Text style={{ fontSize: 11, color: C.muted }}>
-                      {t("budget.usedPct", { pct: Math.round(pct) })}
-                    </Text>
-                    <Text
-                      style={{ fontSize: 11, color: over ? C.red : C.green }}
-                    >
-                      {over
-                        ? t("budget.exceededWith", {
-                            amount: fmt(b.spent - b.b),
-                          })
-                        : t("budget.availableWith", {
-                            amount: fmt(b.b - b.spent),
-                          })}
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
       </DrillScreen>
     );
   };
@@ -3105,6 +2700,7 @@ export function FinanceScreen() {
             <TxList
               txs={gTxs}
               goals={goals}
+              credits={credits}
               emptyMsg={t("goals.emptyLinked")}
             />
           </View>
@@ -3584,6 +3180,7 @@ export function FinanceScreen() {
     chartMonthData,
     balTxs,
     goals,
+    credits,
   };
 
   return (
@@ -3601,8 +3198,70 @@ export function FinanceScreen() {
         {drilldown === "balance" && <DrillBalance />}
         {drilldown === "accounts" && <DrillAccounts />}
         {drilldown === "trend" && <DrillTrend />}
-        {drilldown === "budget" && <DrillBudget />}
+        {drilldown === "budget" && (
+          <DrillBudgetPanel
+            localeTag={localeTag}
+            C={C}
+            iS={iS}
+            cS={cS}
+            mSf={mSf}
+            pl={pl}
+            fmt={fmt}
+            txs={txs}
+            goals={goals}
+            credits={credits}
+            sections={sections}
+            archivedSections={archivedSections}
+            budget={budget}
+            dashboardBudgetRows={dashboardBudgetRows}
+            drillSub={drillSub}
+            budgetDetailMonth={budgetDetailMonth}
+            budgetManageSections={budgetManageSections}
+            budgetRenSec={budgetRenSec}
+            budgetRenSecText={budgetRenSecText}
+            budgetNewSecName={budgetNewSecName}
+            budgetNewSecBudgetDigits={budgetNewSecBudgetDigits}
+            budgetShowNewSectionForm={budgetShowNewSectionForm}
+            sectionBudgetDigits={sectionBudgetDigits}
+            setBudgetDetailMonth={setBudgetDetailMonth}
+            setDrillSub={setDrillSub}
+            setBudgetManageSections={setBudgetManageSections}
+            setBudgetRenSec={setBudgetRenSec}
+            setBudgetRenSecText={setBudgetRenSecText}
+            setBudgetNewSecName={setBudgetNewSecName}
+            setBudgetNewSecBudgetDigits={setBudgetNewSecBudgetDigits}
+            setBudgetShowNewSectionForm={setBudgetShowNewSectionForm}
+            setSectionBudgetDigits={setSectionBudgetDigits}
+            setSections={setSections}
+            setBudget={setBudget}
+            setTxs={setTxs}
+            setGoals={setGoals}
+            setArchivedSections={setArchivedSections}
+            setConfirmDialog={setConfirmDialog}
+            closeDrill={closeDrill}
+          />
+        )}
         {drilldown === "goals" && <DrillGoals />}
+        {drilldown === "credits" && (
+          <DrillCreditsPanel
+            C={C}
+            iS={iS}
+            cS={cS}
+            TY={TY}
+            fmt={fmt}
+            accounts={accounts}
+            defaultAccount={defaultAccount}
+            credits={credits}
+            setCredits={setCredits}
+            txs={txs}
+            setTxs={setTxs}
+            drillSub={drillSub}
+            setDrillSub={setDrillSub}
+            closeDrill={closeDrill}
+            setConfirmDialog={setConfirmDialog}
+            formKbPad={formKbPad}
+          />
+        )}
         {drilldown === "recurring" && <DrillRecurring />}
         {drilldown === "alerts" && <DrillAlerts />}
 
@@ -3668,24 +3327,61 @@ export function FinanceScreen() {
               {t("header.title")}
             </Text>
           </View>
-          <Pressable
-            onPress={() => setAiOpen(true)}
+          <View
             style={{
-              width: 48,
-              height: 48,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: C.blue,
-              backgroundColor: C.blueBg,
+              flexDirection: "row",
               alignItems: "center",
-              justifyContent: "center",
+              gap: 8,
             }}
-            accessibilityLabel={t("header.aiA11y")}
           >
-            <Text style={{ color: C.blue, fontSize: 13, fontWeight: 600 }}>
-              {t("header.ai")}
-            </Text>
-          </Pressable>
+            {tab === "dashboard" && (
+              <Pressable
+                onPress={openNew}
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: C.green,
+                  backgroundColor: C.greenBg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                accessibilityLabel={t("tx.add")}
+                accessibilityRole="button"
+              >
+                <Text
+                  style={{
+                    color: C.green,
+                    fontSize: 28,
+                    fontWeight: "500",
+                    lineHeight: 32,
+                  }}
+                >
+                  +
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={() => setAiOpen(true)}
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: C.blue,
+                backgroundColor: C.blueBg,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              accessibilityLabel={t("header.aiA11y")}
+              accessibilityRole="button"
+            >
+              <Text style={{ color: C.blue, fontSize: 13, fontWeight: 600 }}>
+                {t("header.ai")}
+              </Text>
+            </Pressable>
+          </View>
         </View>
 
         <GHScrollView
@@ -5148,7 +4844,11 @@ export function FinanceScreen() {
                   >
                     {t("calendar.daySelected", { day: calSel })}
                   </Text>
-                  <TxList txs={txOnDay(calSel)} goals={goals} />
+                  <TxList
+                    txs={txOnDay(calSel)}
+                    goals={goals}
+                    credits={credits}
+                  />
                 </View>
               )}
               {(() => {
@@ -5514,6 +5214,22 @@ export function FinanceScreen() {
                   </Text>
                   <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
                 </Pressable>
+                <Pressable
+                  onPress={() => openDrill("credits")}
+                  style={{
+                    ...cS,
+                    paddingVertical: 18,
+                    paddingHorizontal: 18,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Text style={{ fontSize: TY.body, color: C.text }}>
+                    {t("settings.credits")}
+                  </Text>
+                  <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
+                </Pressable>
                 <Text
                   style={{
                     fontSize: TY.caption,
@@ -5671,7 +5387,12 @@ export function FinanceScreen() {
         {/* ACC MODAL */}
         {accModal && (
           <Modal
-            onClose={() => setAccModal(null)}
+            onClose={() => {
+              setAccModal(null);
+              setAccInitialDigits("");
+              setAccNotes("");
+            }}
+            height="80vh"
             title={
               accModal.mode === "add" ? t("accounts.add") : t("accounts.edit")
             }
@@ -5701,6 +5422,87 @@ export function FinanceScreen() {
                   value={accForm}
                   onChangeText={setAccForm}
                   style={iS}
+                />
+              </View>
+              <View style={{ marginBottom: 16 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.65,
+                    marginBottom: 8,
+                  }}
+                >
+                  {t("accounts.currency")}
+                </Text>
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: C.border,
+                    borderRadius: 14,
+                    overflow: "hidden",
+                    backgroundColor: C.bg3,
+                  }}
+                >
+                  <ThemedPicker
+                    C={C}
+                    selectedValue={accCurrency}
+                    onValueChange={(v) => setAccCurrency(v)}
+                  >
+                    {ACCOUNT_CURRENCY_CODES.map((code) => (
+                      <Picker.Item
+                        key={code}
+                        label={code}
+                        value={code}
+                        color={C.text}
+                      />
+                    ))}
+                  </ThemedPicker>
+                </View>
+              </View>
+              <View style={{ marginBottom: 16 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.65,
+                    marginBottom: 8,
+                  }}
+                >
+                  {t("accounts.initialAmount")}
+                </Text>
+                <TextInput
+                  keyboardType="number-pad"
+                  value={fmtMoneyDigits(accInitialDigits)}
+                  onChangeText={(v) =>
+                    setAccInitialDigits(stripMoneyToDigits(v))
+                  }
+                  style={iS}
+                  placeholder={t("accounts.initialAmountHint")}
+                  placeholderTextColor={C.muted}
+                />
+              </View>
+              <View style={{ marginBottom: 16 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.65,
+                    marginBottom: 8,
+                  }}
+                >
+                  {t("accounts.notes")}
+                </Text>
+                <TextInput
+                  value={accNotes}
+                  onChangeText={setAccNotes}
+                  style={iS}
+                  placeholder={t("accounts.notesPlaceholder")}
+                  placeholderTextColor={C.muted}
+                  multiline
                 />
               </View>
               <Pressable

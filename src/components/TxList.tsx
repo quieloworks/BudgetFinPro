@@ -8,9 +8,10 @@ type TxListProps = {
   txs: Record<string, unknown>[];
   emptyMsg?: string;
   goals?: { id: number; name: string }[] | undefined;
+  credits?: { id: number; name: string }[] | undefined;
 };
 
-export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
+export const TxList = ({ txs, emptyMsg, goals, credits }: TxListProps) => {
   const { t } = useTranslation();
   const { C } = useAppTheme();
   return (
@@ -28,6 +29,13 @@ export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
         </Text>
       )}
       {txs.map((tx) => {
+        const cred =
+          tx.creditId != null
+            ? (credits || []).find((c) => c.id === tx.creditId)
+            : null;
+        const creditTag = cred
+          ? ` · ${t("credits.badge")}: ${cred.name}`
+          : "";
         const sub =
           tx.type !== "transfer"
             ? null
@@ -77,6 +85,7 @@ export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
                 style={{ fontSize: TY.caption, color: C.muted, marginTop: 4 }}
               >
                 {String(tx.date)} · {String(sub || tx.account)}
+                {creditTag}
               </Text>
             </View>
             <Text
