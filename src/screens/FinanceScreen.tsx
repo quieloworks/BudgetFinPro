@@ -891,11 +891,13 @@ export function FinanceScreen() {
   /** Mini barras inicio: mismos datos reales que el drill (últimos 4 meses por transacciones). */
   const trendData = useMemo(
     () =>
-      chartMonthData.map((d) => ({
-        inc: d.inc,
-        exp: d.exp,
-        label: d.label,
-      })),
+      [...chartMonthData]
+        .reverse()
+        .map((d) => ({
+          inc: d.inc,
+          exp: d.exp,
+          label: d.label,
+        })),
     [chartMonthData],
   );
   const maxTrend = Math.max(...trendData.map((m) => Math.max(m.inc, m.exp)), 1);

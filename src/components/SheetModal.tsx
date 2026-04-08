@@ -15,7 +15,7 @@ import {
 } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../theme/ThemeContext";
-import { TY, TAB_CONTENT_H } from "../theme/typography";
+import { TY } from "../theme/typography";
 
 /** Drag past this distance to dismiss (points). */
 const DISMISS_DRAG_PX = 72;
@@ -56,8 +56,8 @@ export const SheetModal = ({
   const { C } = useAppTheme();
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const tabReserve = TAB_CONTENT_H + insets.bottom;
-  const sheetPadBottom = Math.max(20, tabReserve - 8);
+  /** El modal a pantalla completa cubre la barra de tabs; solo respetar safe area (home indicator). */
+  const sheetPadBottom = Math.max(16, insets.bottom + 16);
   const capPx = sheetCapPx(height, windowHeight);
   /**
    * No mover ni encoger el sheet al abrir el teclado: si el sheet sube o cambia de alto,
