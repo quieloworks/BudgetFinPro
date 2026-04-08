@@ -30,6 +30,8 @@ export const T_DARK = {
   gradHero: ["#0D3D2E", "#0F2418"],
   /** Ingresos / balance en tarjeta hero (gradiente oscuro) */
   heroGreen: "#34D399",
+  /** placeholder TextInput — legible en fondo oscuro */
+  inputPlaceholder: "#AEB4C8",
 } as const;
 
 export const T_LIGHT = {
@@ -62,6 +64,7 @@ export const T_LIGHT = {
   tabBarBg: "#DCE1EC",
   gradHero: ["#0B5C45", "#134E3A"],
   heroGreen: "#A7F3D0",
+  inputPlaceholder: "#64748B",
 } as const;
 
 export type ThemeTokens = typeof T_DARK | typeof T_LIGHT;

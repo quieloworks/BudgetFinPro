@@ -7,6 +7,8 @@ export const applyTxToAccounts = (
     balMap[t.account as string] =
       (balMap[t.account as string] || 0) + (t.amount as number);
   } else if (t.type === "expense") {
+    // Cargo a TC: no mueve efectivo en cuenta; solo deuda de tarjeta.
+    if (String(t.creditCardPart || "") === "charge") return;
     balMap[t.account as string] =
       (balMap[t.account as string] || 0) - (t.amount as number);
   } else if (t.type === "transfer") {

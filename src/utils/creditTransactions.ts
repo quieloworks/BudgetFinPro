@@ -53,8 +53,11 @@ export function buildPaymentTransaction(
   tid: number,
   desc: string,
   t: (key: string, opts?: Record<string, string>) => string,
+  opts?: { account?: string },
 ): Record<string, unknown> | null {
-  if (amount <= 0 || !credit.account) return null;
+  if (amount <= 0) return null;
+  const acc = String(opts?.account ?? credit.account ?? "").trim();
+  if (!acc) return null;
   const base = {
     id: tid,
     creditId: credit.id,
@@ -80,7 +83,7 @@ export function buildPaymentTransaction(
       type: "income",
       amount,
       desc: label,
-      account: credit.account,
+      account: acc,
     };
   }
 
@@ -89,6 +92,6 @@ export function buildPaymentTransaction(
     type: "expense",
     amount,
     desc: label,
-    account: credit.account,
+    account: acc,
   };
 }

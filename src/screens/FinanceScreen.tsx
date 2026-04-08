@@ -37,6 +37,7 @@ import {
   DASHBOARD_WIDGET_ORDER_KEY,
   FINPRO_STORAGE_KEY,
   LANGUAGE_STORAGE_KEY,
+  normalizeDashboardWidgetOrder,
 } from "../constants/storage";
 import {
   sortedSupportedLocales,
@@ -60,6 +61,17 @@ import {
   chartMonthEndDate,
   reportAsOfEndDate,
 } from "../utils/goalBalances";
+import {
+  creditProgressPct,
+  creditRemaining,
+  sumCreditPayments,
+} from "../utils/creditMath";
+import {
+  totalDebtAsOf,
+  creditCardBalanceAsOf,
+  creditCardUtilizationPct,
+} from "../utils/creditCardMath";
+import { buildPaymentTransaction } from "../utils/creditTransactions";
 import { fmt } from "../utils/format";
 import {
   fmtMoneyDigits,
@@ -79,6 +91,7 @@ import { LineChart } from "../components/charts/LineChart";
 import { DashboardDraggableWidgets } from "../components/DashboardDraggableWidgets";
 import { DrillBudgetPanel } from "./DrillBudgetPanel";
 import { DrillCreditsPanel } from "./DrillCreditsPanel";
+import { DrillCreditCardsPanel } from "./DrillCreditCardsPanel";
 import { SwipeRow } from "../components/SwipeRow";
 import { TxList } from "../components/TxList";
 import { TxForm, TxTypeBar, TxDateField } from "../components/TxModalForm";
@@ -275,6 +288,7 @@ export function FinanceScreen() {
   const [defaultAccount, setDefaultAccount] = useState("");
   const [goals, setGoals] = useState([]);
   const [credits, setCredits] = useState([]);
+  const [creditCards, setCreditCards] = useState([]);
   const [dismissedAlerts, setDismissedAlerts] = useState([]);
   const [goalInputs, setGoalInputs] = useState({});
   const [alertRules, setAlertRules] = useState([]);
@@ -358,6 +372,11 @@ export function FinanceScreen() {
   const blankForm = () => {
     const sec = sections.find((s) => s !== "Transferencias") || sections[0];
     const other = accounts.find((a) => a !== defaultAccount) || accounts[0];
+    const payable = credits.filter(
+      (c) =>
+        c.direction === "received" &&
+        creditRemaining(c, sumCreditPayments(txs, c.id)) > 0,
+    );
     return {
       type: "expense",
       amountDigits: "",
@@ -367,12 +386,29 @@ export function FinanceScreen() {
       transferToAccount: other || "",
       transferToGoalId: goals[0]?.id ?? null,
       transferFromGoalId: goals[0]?.id ?? null,
+      transferToCreditId: payable[0]?.id ?? null,
       transferLeg: "to_account",
       date: todayStr(),
       recurring: false,
       freq: "monthly",
       notes: "",
+      ccMode: "none",
+      creditCardId: null,
     };
+  };
+  const openNewTxWithCard = (cardId, part) => {
+    const b = blankForm();
+    setForm({
+      ...b,
+      type: "expense",
+      ccMode: part === "charge" ? "charge" : "payment",
+      creditCardId: cardId,
+      section:
+        part === "payment" && sections.includes("Transferencias")
+          ? "Transferencias"
+          : b.section,
+    });
+    setTxModal({ tx: null, mode: "new" });
   };
   const [form, setForm] = useState(blankForm());
   const txFormScrollRef = useRef(null);
@@ -417,6 +453,7 @@ export function FinanceScreen() {
     inc: true,
     exp: true,
     sav: true,
+    debt: true,
   });
   const [balCustom, setBalCustom] = useState(() => {
     const y = new Date().getFullYear();
@@ -588,7 +625,8 @@ export function FinanceScreen() {
       if (
         drilldown === "trend" ||
         drilldown === "goals" ||
-        drilldown === "credits"
+        drilldown === "credits" ||
+        drilldown === "credit_cards"
       ) {
         if (drillSub) {
           setDrillSub(null);
@@ -647,6 +685,7 @@ export function FinanceScreen() {
           if (p.accounts) setAccounts(p.accounts);
           if (p.goals) setGoals(p.goals);
           if (Array.isArray(p.credits)) setCredits(p.credits);
+          if (Array.isArray(p.creditCards)) setCreditCards(p.creditCards);
           if (p.defaultAccount) setDefaultAccount(p.defaultAccount);
           if (p.archivedAccounts) setArchivedAccounts(p.archivedAccounts);
           if (Array.isArray(p.alertRules)) setAlertRules(p.alertRules);
@@ -667,14 +706,8 @@ export function FinanceScreen() {
         const raw = await AsyncStorage.getItem(DASHBOARD_WIDGET_ORDER_KEY);
         if (!raw) return;
         const parsed = JSON.parse(raw);
-        const valid = new Set(DASHBOARD_WIDGET_IDS);
-        if (
-          Array.isArray(parsed) &&
-          parsed.length === DASHBOARD_WIDGET_IDS.length &&
-          parsed.every((id) => typeof id === "string" && valid.has(id))
-        ) {
-          setDashboardWidgetOrder(parsed);
-        }
+        const next = normalizeDashboardWidgetOrder(parsed);
+        if (next) setDashboardWidgetOrder(next);
       } catch (_) {}
     })();
   }, []);
@@ -692,6 +725,7 @@ export function FinanceScreen() {
             accounts,
             goals,
             credits,
+            creditCards,
             defaultAccount,
             archivedAccounts,
             alertRules,
@@ -710,6 +744,7 @@ export function FinanceScreen() {
     accounts,
     goals,
     credits,
+    creditCards,
     defaultAccount,
     archivedAccounts,
     alertRules,
@@ -755,9 +790,17 @@ export function FinanceScreen() {
   const reportTExp = useMemo(
     () =>
       reportTxs
-        .filter((x) => x.type === "expense")
+        .filter(
+          (x) =>
+            x.type === "expense" &&
+            String(x.creditCardPart || "") !== "payment",
+        )
         .reduce((s, x) => s + x.amount, 0),
     [reportTxs],
+  );
+  const reportDebtTotal = useMemo(
+    () => totalDebtAsOf(credits, creditCards, txs, todayStr()),
+    [credits, creditCards, txs],
   );
   const reportBal = useMemo(
     () => reportTInc - reportTExp,
@@ -810,7 +853,11 @@ export function FinanceScreen() {
     .filter((t) => t.type === "income")
     .reduce((s, t) => s + t.amount, 0);
   const tExp = txs
-    .filter((t) => t.type === "expense")
+    .filter(
+      (t) =>
+        t.type === "expense" &&
+        String(t.creditCardPart || "") !== "payment",
+    )
     .reduce((s, t) => s + t.amount, 0);
   const bal = tInc - tExp;
   const savRate = tInc > 0 ? Math.round((bal / tInc) * 100) : 0;
@@ -819,7 +866,12 @@ export function FinanceScreen() {
       sections.map((s) => ({
         s,
         spent: txs
-          .filter((t) => t.type === "expense" && t.section === s)
+          .filter(
+            (t) =>
+              t.type === "expense" &&
+              t.section === s &&
+              String(t.creditCardPart || "") !== "payment",
+          )
           .reduce((a, t) => a + t.amount, 0),
         b: budget[s] || 0,
       })),
@@ -836,6 +888,68 @@ export function FinanceScreen() {
       ),
     [bySection],
   );
+
+  /** Vista previa inicio: mismas métricas que el listado de créditos (máx. 2). */
+  const dashboardCreditPreviews = useMemo(() => {
+    return [...credits]
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 2)
+      .map((c) => {
+        const paid = sumCreditPayments(txs, c.id);
+        const pct = Math.round(creditProgressPct(c, paid));
+        const dirLabel =
+          c.direction === "given"
+            ? t("credits.directionGiven")
+            : t("credits.directionReceived");
+        const subtitle = c.endDate
+          ? `${dirLabel} · ${t("credits.termEnd")}: ${c.endDate}`
+          : dirLabel;
+        return {
+          id: c.id,
+          name: c.name,
+          paid,
+          principal: c.principal,
+          pct,
+          color: c.color,
+          subtitle,
+        };
+      });
+  }, [credits, txs, t]);
+
+  const dashboardCreditCardPreviews = useMemo(() => {
+    const asOf = todayStr();
+    return [...creditCards]
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 2)
+      .map((c) => {
+        const bal = creditCardBalanceAsOf(txs, c.id, asOf);
+        const pct = Math.round(
+          creditCardUtilizationPct(bal, c.creditLimit),
+        );
+        return {
+          id: c.id,
+          name: c.name,
+          balance: bal,
+          limit: c.creditLimit,
+          pct,
+          color: c.color,
+          subtitle: t("creditCards.payByDay", { day: c.paymentDay }),
+        };
+      });
+  }, [creditCards, txs, t]);
+
+  const creditsPayableForTransfer = useMemo(
+    () =>
+      credits
+        .filter(
+          (c) =>
+            c.direction === "received" &&
+            creditRemaining(c, sumCreditPayments(txs, c.id)) > 0,
+        )
+        .map((c) => ({ id: c.id, name: c.name })),
+    [credits, txs],
+  );
+
   const accountBalMap = {};
   accounts.forEach((a) => {
     accountBalMap[a] = accountMeta[a]?.initialAmount ?? 0;
@@ -918,11 +1032,21 @@ export function FinanceScreen() {
     .filter((t) => t.type === "income")
     .reduce((s, t) => s + t.amount, 0);
   const balExp = balTxs
-    .filter((t) => t.type === "expense")
+    .filter(
+      (t) =>
+        t.type === "expense" &&
+        String(t.creditCardPart || "") !== "payment",
+    )
     .reduce((s, t) => s + t.amount, 0);
   /** Total acumulado en metas al cierre del periodo del reporte (transferencias meta ↔ cuenta). */
   const balMetasTotal = totalGoalSavedAsOfDate(
     goals,
+    txs,
+    reportAsOfEndDate(balTf, balCustom),
+  );
+  const balDebtTotal = totalDebtAsOf(
+    credits,
+    creditCards,
     txs,
     reportAsOfEndDate(balTf, balCustom),
   );
@@ -943,15 +1067,17 @@ export function FinanceScreen() {
       const exp = txs
         .filter((t) => {
           if (t.type !== "expense") return false;
+          if (String(t.creditCardPart || "") === "payment") return false;
           const ymk = yearMonthKeyFromTxDate(t.date);
           return ymk === mk;
         })
         .reduce((s, t) => s + Number(t.amount) || 0, 0);
       const asOf = chartMonthEndDate(mk);
       const sav = totalGoalSavedAsOfDate(goals, txs, asOf);
-      return { label, inc, exp, sav };
+      const debt = totalDebtAsOf(credits, creditCards, txs, asOf);
+      return { label, inc, exp, sav, debt };
     });
-  }, [txs, goals]);
+  }, [txs, goals, credits, creditCards]);
   const pieData = useMemo(
     () =>
       [
@@ -969,32 +1095,41 @@ export function FinanceScreen() {
               legendAmount: balMetasTotal,
             }
           : null,
+        balFilters.debt && balDebtTotal > 0
+          ? {
+              label: t("balance.debt"),
+              value: balDebtTotal,
+              color: C.purple,
+              legendAmount: balDebtTotal,
+            }
+          : null,
       ].filter(Boolean),
     [
       balFilters.inc,
       balFilters.exp,
       balFilters.sav,
+      balFilters.debt,
       balInc,
       balExp,
       balMetasTotal,
+      balDebtTotal,
       C.green,
       C.red,
       C.gold,
+      C.purple,
       t,
       i18n.language,
     ],
   );
 
-  /** Mini barras inicio: mismos datos reales que el drill (últimos 4 meses por transacciones). */
+  /** Mini barras inicio: izquierda = más antiguo, derecha = mes más reciente (alineado con rollingChartMonthBuckets). */
   const trendData = useMemo(
     () =>
-      [...chartMonthData]
-        .reverse()
-        .map((d) => ({
-          inc: d.inc,
-          exp: d.exp,
-          label: d.label,
-        })),
+      chartMonthData.map((d) => ({
+        inc: d.inc,
+        exp: d.exp,
+        label: d.label,
+      })),
     [chartMonthData],
   );
   const maxTrend = Math.max(...trendData.map((m) => Math.max(m.inc, m.exp)), 1);
@@ -1077,6 +1212,7 @@ export function FinanceScreen() {
             ? "to_goal"
             : "to_account"
         : "to_account";
+    const ccPart = String(t.creditCardPart || "");
     const base = {
       ...t,
       type: t.type || "expense",
@@ -1085,9 +1221,17 @@ export function FinanceScreen() {
       transferToAccount: t.transferToAccount || "",
       transferToGoalId: t.transferToGoalId ?? null,
       transferFromGoalId: t.transferFromGoalId ?? null,
+      transferToCreditId: t.transferToCreditId ?? null,
       section: t.section || sections[0],
       recurring: !!t.recurring,
       freq: t.freq || "monthly",
+      ccMode:
+        ccPart === "charge"
+          ? "charge"
+          : ccPart === "payment"
+            ? "payment"
+            : "none",
+      creditCardId: t.creditCardId ?? null,
     };
     setForm(base);
     setTxModal({ tx: t, mode });
@@ -1210,17 +1354,63 @@ export function FinanceScreen() {
             ),
           );
         }
+      } else if (form.transferLeg === "to_credit") {
+        if (!form.transferToCreditId) return;
+        const cr = credits.find((x) => x.id === form.transferToCreditId);
+        if (!cr || cr.direction !== "received") return;
+        const payDesc =
+          (form.desc || "").trim() ||
+          t("credits.txPaymentMade", { name: cr.name });
+        const tid = txModal?.mode === "edit" ? txModal.tx.id : Date.now();
+        const built = buildPaymentTransaction(
+          cr,
+          amt,
+          form.date,
+          tid,
+          payDesc,
+          t,
+          { account: form.account },
+        );
+        if (!built) return;
+        if (txModal?.mode === "edit") {
+          setTxs((p) =>
+            p.map((x) =>
+              x.id === txModal.tx.id ? { ...built, id: x.id } : x,
+            ),
+          );
+        } else {
+          setTxs((p) => [...p, built]);
+        }
       }
       setTxModal(null);
       return;
     }
     const trimmed = (form.desc || "").trim();
     if (!trimmed) return;
+    let creditCardId = null;
+    let creditCardPart = null;
+    if (form.type === "expense") {
+      if (form.ccMode === "charge") {
+        if (!form.creditCardId) return;
+        creditCardId = form.creditCardId;
+        creditCardPart = "charge";
+      } else if (form.ccMode === "payment") {
+        if (!form.creditCardId || !form.account) return;
+        creditCardId = form.creditCardId;
+        creditCardPart = "payment";
+      }
+    }
+    const ccPaymentSection = sections.includes("Transferencias")
+      ? "Transferencias"
+      : sections.find((s) => s !== "Transferencias") || sections[0];
     const t = {
       type: form.type,
       amount: amt,
       desc: trimmed,
-      section: form.section,
+      section:
+        form.type === "expense" && creditCardPart === "payment"
+          ? ccPaymentSection || form.section
+          : form.section,
       account: form.account,
       date: form.date,
       recurring: !!form.recurring,
@@ -1229,6 +1419,8 @@ export function FinanceScreen() {
       transferToAccount: null,
       transferToGoalId: null,
       transferFromGoalId: null,
+      creditCardId,
+      creditCardPart,
     };
     if (txModal?.mode === "edit")
       setTxs((p) =>
@@ -1602,6 +1794,7 @@ export function FinanceScreen() {
         balInc,
         balExp,
         balMetasTotal,
+        balDebtTotal,
         fmt,
         balChart,
         setBalChart,
@@ -1612,6 +1805,7 @@ export function FinanceScreen() {
         balTxs,
         goals,
         credits: balCredits,
+        creditCards: balCreditCards,
       } = p;
       return (
         <DrillScreen title={t("drill.balance")} onBack={closeDrill}>
@@ -1675,8 +1869,15 @@ export function FinanceScreen() {
           </View>
         </View>
       )}
-      <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
-        <View style={mSf}>
+      <View
+        style={{
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 8,
+          marginBottom: 14,
+        }}
+      >
+        <View style={{ ...mSf, flex: 1, minWidth: "42%" }}>
           <Text
             style={{
               fontSize: 10,
@@ -1692,7 +1893,7 @@ export function FinanceScreen() {
             {fmt(balInc)}
           </Text>
         </View>
-        <View style={mSf}>
+        <View style={{ ...mSf, flex: 1, minWidth: "42%" }}>
           <Text
             style={{
               fontSize: 10,
@@ -1708,7 +1909,7 @@ export function FinanceScreen() {
             {fmt(balExp)}
           </Text>
         </View>
-        <View style={mSf}>
+        <View style={{ ...mSf, flex: 1, minWidth: "42%" }}>
           <Text
             style={{
               fontSize: 10,
@@ -1728,6 +1929,28 @@ export function FinanceScreen() {
             }}
           >
             {fmt(balMetasTotal)}
+          </Text>
+        </View>
+        <View style={{ ...mSf, flex: 1, minWidth: "42%" }}>
+          <Text
+            style={{
+              fontSize: 10,
+              color: C.muted,
+              textTransform: "uppercase",
+              letterSpacing: 0.65,
+              marginBottom: 4,
+            }}
+          >
+            {t("balance.debt")}
+          </Text>
+          <Text
+            style={{
+              fontSize: 16,
+              fontWeight: 500,
+              color: C.purple,
+            }}
+          >
+            {fmt(balDebtTotal)}
           </Text>
         </View>
       </View>
@@ -1785,6 +2008,7 @@ export function FinanceScreen() {
           ["inc", t("balance.income"), C.green],
           ["exp", t("balance.expense"), C.red],
           ["sav", t("balance.inGoals"), C.gold],
+          ["debt", t("balance.debt"), C.purple],
         ].map(([k, l, col]) => (
           <Pressable
             key={k}
@@ -1875,6 +2099,7 @@ export function FinanceScreen() {
                 inc: balFilters.inc ? d.inc : undefined,
                 exp: balFilters.exp ? d.exp : undefined,
                 sav: balFilters.sav ? d.sav : undefined,
+                debt: balFilters.debt ? d.debt : undefined,
               }))}
             />
           </View>
@@ -1906,6 +2131,13 @@ export function FinanceScreen() {
                       data: chartMonthData.map((d) => d.sav),
                     }
                   : null,
+                balFilters.debt
+                  ? {
+                      label: t("balance.debt"),
+                      color: C.purple,
+                      data: chartMonthData.map((d) => d.debt),
+                    }
+                  : null,
               ].filter(Boolean)}
             />
             <View
@@ -1921,6 +2153,7 @@ export function FinanceScreen() {
                 ["inc", t("balance.income"), C.green],
                 ["exp", t("balance.expense"), C.red],
                 ["sav", t("balance.inGoals"), C.gold],
+                ["debt", t("balance.debt"), C.purple],
               ]
                 .filter(([k]) => balFilters[k])
                 .map(([k, l, col]) => (
@@ -1962,6 +2195,7 @@ export function FinanceScreen() {
           txs={[...balTxs].sort((a, b) => b.date.localeCompare(a.date))}
           goals={goals}
           credits={balCredits}
+          creditCards={balCreditCards}
           emptyMsg={t("txList.emptyPeriod")}
         />
       </View>
@@ -2061,7 +2295,12 @@ export function FinanceScreen() {
             >
               {t("common.movements")}
             </Text>
-            <TxList txs={accTxs} goals={goals} credits={credits} />
+            <TxList
+              txs={accTxs}
+              goals={goals}
+              credits={credits}
+              creditCards={creditCards}
+            />
           </View>
         </DrillScreen>
       );
@@ -2464,7 +2703,12 @@ export function FinanceScreen() {
             >
               {t("common.movements")}
             </Text>
-            <TxList txs={mTxs} goals={goals} credits={credits} />
+            <TxList
+              txs={mTxs}
+              goals={goals}
+              credits={credits}
+              creditCards={creditCards}
+            />
           </View>
         </DrillScreen>
       );
@@ -2701,6 +2945,7 @@ export function FinanceScreen() {
               txs={gTxs}
               goals={goals}
               credits={credits}
+              creditCards={creditCards}
               emptyMsg={t("goals.emptyLinked")}
             />
           </View>
@@ -3171,6 +3416,7 @@ export function FinanceScreen() {
     balInc,
     balExp,
     balMetasTotal,
+    balDebtTotal,
     fmt,
     balChart,
     setBalChart,
@@ -3181,6 +3427,7 @@ export function FinanceScreen() {
     balTxs,
     goals,
     credits,
+    creditCards,
   };
 
   return (
@@ -3210,6 +3457,7 @@ export function FinanceScreen() {
             txs={txs}
             goals={goals}
             credits={credits}
+            creditCards={creditCards}
             sections={sections}
             archivedSections={archivedSections}
             budget={budget}
@@ -3252,6 +3500,7 @@ export function FinanceScreen() {
             accounts={accounts}
             defaultAccount={defaultAccount}
             credits={credits}
+            creditCards={creditCards}
             setCredits={setCredits}
             txs={txs}
             setTxs={setTxs}
@@ -3260,6 +3509,24 @@ export function FinanceScreen() {
             closeDrill={closeDrill}
             setConfirmDialog={setConfirmDialog}
             formKbPad={formKbPad}
+          />
+        )}
+        {drilldown === "credit_cards" && (
+          <DrillCreditCardsPanel
+            C={C}
+            iS={iS}
+            cS={cS}
+            fmt={fmt}
+            creditCards={creditCards}
+            setCreditCards={setCreditCards}
+            txs={txs}
+            drillSub={drillSub}
+            setDrillSub={setDrillSub}
+            closeDrill={closeDrill}
+            setConfirmDialog={setConfirmDialog}
+            formKbPad={formKbPad}
+            credits={credits}
+            openNewTxWithCard={openNewTxWithCard}
           />
         )}
         {drilldown === "recurring" && <DrillRecurring />}
@@ -3582,6 +3849,8 @@ export function FinanceScreen() {
                 maxTrend={maxTrend}
                 dashboardBudgetRows={dashboardBudgetRows}
                 goals={goals}
+                dashboardCreditPreviews={dashboardCreditPreviews}
+                dashboardCreditCardPreviews={dashboardCreditCardPreviews}
                 recTxs={recTxs}
               />
             </View>
@@ -3718,7 +3987,14 @@ export function FinanceScreen() {
                 {t("tx.count", { n: filteredTxs.length })}
               </Text>
               {filteredTxs.map((tx) => (
-                <SwipeRow key={tx.id} tx={tx} goals={goals} onView={openTx} />
+                <SwipeRow
+                  key={tx.id}
+                  tx={tx}
+                  goals={goals}
+                  credits={credits}
+                  creditCards={creditCards}
+                  onView={openTx}
+                />
               ))}
             </View>
           )}
@@ -4220,6 +4496,30 @@ export function FinanceScreen() {
                           }}
                         >
                           {reportSavRate}%
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={{ flexDirection: "row", gap: 10 }}>
+                      <View style={mSf}>
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            color: C.muted,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.85,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {t("balance.debt")}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 20,
+                            fontWeight: 500,
+                            color: C.purple,
+                          }}
+                        >
+                          {fmt(reportDebtTotal)}
                         </Text>
                       </View>
                     </View>
@@ -4848,6 +5148,7 @@ export function FinanceScreen() {
                     txs={txOnDay(calSel)}
                     goals={goals}
                     credits={credits}
+                    creditCards={creditCards}
                   />
                 </View>
               )}
@@ -5230,6 +5531,22 @@ export function FinanceScreen() {
                   </Text>
                   <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
                 </Pressable>
+                <Pressable
+                  onPress={() => openDrill("credit_cards")}
+                  style={{
+                    ...cS,
+                    paddingVertical: 18,
+                    paddingHorizontal: 18,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Text style={{ fontSize: TY.body, color: C.text }}>
+                    {t("settings.creditCards")}
+                  </Text>
+                  <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
+                </Pressable>
                 <Text
                   style={{
                     fontSize: TY.caption,
@@ -5293,6 +5610,8 @@ export function FinanceScreen() {
                   iS={iS}
                   cS={cS}
                   goals={goals}
+                  payableCredits={creditsPayableForTransfer}
+                  creditCards={creditCards}
                   accounts={accounts}
                   expenseSections={expenseSections}
                   scrollFieldIntoView={scrollTxFieldIntoView}
@@ -5481,7 +5800,7 @@ export function FinanceScreen() {
                   }
                   style={iS}
                   placeholder={t("accounts.initialAmountHint")}
-                  placeholderTextColor={C.muted}
+                  placeholderTextColor={C.inputPlaceholder}
                 />
               </View>
               <View style={{ marginBottom: 16 }}>
@@ -5501,7 +5820,7 @@ export function FinanceScreen() {
                   onChangeText={setAccNotes}
                   style={iS}
                   placeholder={t("accounts.notesPlaceholder")}
-                  placeholderTextColor={C.muted}
+                  placeholderTextColor={C.inputPlaceholder}
                   multiline
                 />
               </View>

@@ -9,7 +9,13 @@ import {
   formatAxisMoney,
 } from "../../utils/chartAxis";
 
-type BarDatum = { label: string; inc?: number; exp?: number; sav?: number };
+type BarDatum = {
+  label: string;
+  inc?: number;
+  exp?: number;
+  sav?: number;
+  debt?: number;
+};
 
 type BarChartProps = { data: BarDatum[]; height?: number };
 
@@ -47,7 +53,12 @@ export const BarChart = ({ data, height = 160 }: BarChartProps) => {
 
   const maxPos = Math.max(
     1,
-    ...safe.flatMap((d) => [d.inc ?? 0, d.exp ?? 0, Math.max(0, d.sav ?? 0)]),
+    ...safe.flatMap((d) => [
+      d.inc ?? 0,
+      d.exp ?? 0,
+      Math.max(0, d.sav ?? 0),
+      d.debt ?? 0,
+    ]),
   );
 
   const { min: minAxis, max: maxAxis, ticks } = hasNegSav
@@ -147,13 +158,15 @@ export const BarChart = ({ data, height = 160 }: BarChartProps) => {
                   }}
                 />
               ) : null}
-              {(["inc", "exp", "sav"] as const).map((kind) => {
+              {(["inc", "exp", "sav", "debt"] as const).map((kind) => {
                 const raw =
                   kind === "inc"
                     ? d.inc
                     : kind === "exp"
                       ? d.exp
-                      : d.sav;
+                      : kind === "sav"
+                        ? d.sav
+                        : d.debt;
                 if (raw === undefined)
                   return <View key={kind} style={{ flex: 1 }} />;
                 const col =
@@ -161,9 +174,11 @@ export const BarChart = ({ data, height = 160 }: BarChartProps) => {
                     ? C.green
                     : kind === "exp"
                       ? C.red
-                      : raw >= 0
-                        ? C.gold
-                        : C.red;
+                      : kind === "debt"
+                        ? C.purple
+                        : raw >= 0
+                          ? C.gold
+                          : C.red;
                 const v = Number(raw);
                 const isSav = kind === "sav";
                 const hPos =

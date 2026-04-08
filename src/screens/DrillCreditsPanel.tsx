@@ -31,8 +31,10 @@ import {
   fmtMoneyDigits,
   stripMoneyToDigits,
   parseMoneyDigits,
+  digitsFromNumber,
 } from "../utils/money";
-import { todayStr } from "../utils/dates";
+import { todayStr, parseLocalYmd } from "../utils/dates";
+import { TxDateField } from "../components/TxModalForm";
 
 const CREDIT_SWATCH = [
   T_DARK.blue,
@@ -51,6 +53,7 @@ export function DrillCreditsPanel({
   accounts,
   defaultAccount,
   credits,
+  creditCards,
   setCredits,
   txs,
   setTxs,
@@ -68,6 +71,8 @@ export function DrillCreditsPanel({
   }, [drillSub, credits, setDrillSub]);
 
   const [creditModalOpen, setCreditModalOpen] = useState(false);
+  const [editingCreditId, setEditingCreditId] = useState(null);
+  const [pickEditOpen, setPickEditOpen] = useState(false);
   const [payModal, setPayModal] = useState(null);
 
   const [formDir, setFormDir] = useState("received");
@@ -83,6 +88,7 @@ export function DrillCreditsPanel({
   const [formColor, setFormColor] = useState(T_DARK.blue);
 
   const resetCreditForm = () => {
+    setEditingCreditId(null);
     setFormDir("received");
     setFormKind("cash");
     setFormName("");
@@ -94,6 +100,28 @@ export function DrillCreditsPanel({
     setFormFreq("monthly");
     setFormInstallmentDigits("");
     setFormColor(T_DARK.blue);
+  };
+
+  const openEditCredit = (c) => {
+    if (!c) return;
+    setEditingCreditId(c.id);
+    setFormDir(c.direction);
+    setFormKind(c.kind);
+    setFormName(c.name || "");
+    setFormPrincipalDigits(digitsFromNumber(c.principal));
+    setFormAccount(c.account || defaultAccount || accounts[0] || "");
+    setFormStart((c.startDate || "").trim() || todayStr());
+    setFormEnd((c.endDate || "").trim() || "");
+    const inst = c.installmentAmount != null && c.installmentFreq;
+    setFormUseInstallment(!!inst);
+    setFormFreq(c.installmentFreq || "monthly");
+    setFormInstallmentDigits(
+      c.installmentAmount != null
+        ? digitsFromNumber(c.installmentAmount)
+        : "",
+    );
+    setFormColor(c.color || T_DARK.blue);
+    setCreditModalOpen(true);
   };
 
   const openNewCredit = () => {
@@ -112,6 +140,41 @@ export function DrillCreditsPanel({
     const instAmt = parseMoneyDigits(formInstallmentDigits);
     const instOk =
       formUseInstallment && !Number.isNaN(instAmt) && instAmt > 0 && formFreq;
+
+    if (editingCreditId != null) {
+      const prev = credits.find((x) => x.id === editingCreditId);
+      if (!prev) return;
+      const paid = sumCreditPayments(txs, editingCreditId);
+      if (principal < paid) return;
+      const credit = {
+        ...prev,
+        name,
+        principal,
+        account: needsAccount ? formAccount.trim() : formAccount.trim() || "",
+        startDate: (formStart || "").trim() || todayStr(),
+        endDate: (formEnd || "").trim() || null,
+        installmentFreq: instOk ? formFreq : "",
+        installmentAmount: instOk ? instAmt : null,
+        color: formColor,
+      };
+      setCredits((p) => p.map((x) => (x.id === editingCreditId ? credit : x)));
+      setTxs((p) =>
+        p.map((tx) => {
+          if (
+            tx.creditId !== editingCreditId ||
+            tx.creditPart !== "principal"
+          ) {
+            return tx;
+          }
+          const built = buildPrincipalTransaction(credit, tx.id, t);
+          if (!built) return tx;
+          return { ...built, id: tx.id };
+        }),
+      );
+      setCreditModalOpen(false);
+      resetCreditForm();
+      return;
+    }
 
     const baseId = Date.now();
     const credit = {
@@ -143,6 +206,8 @@ export function DrillCreditsPanel({
     if (Number.isNaN(amt) || amt <= 0) return;
     const dateStr = (payModal.dateStr || "").trim() || todayStr();
     const tid = Date.now();
+    const payAcct = (payModal.payAccount || "").trim() || credit.account;
+    if (!payAcct) return;
     const tx = buildPaymentTransaction(
       credit,
       amt,
@@ -150,6 +215,7 @@ export function DrillCreditsPanel({
       tid,
       (payModal.desc || "").trim(),
       t,
+      { account: payAcct },
     );
     if (!tx) return;
     setTxs((p) => [...p, tx]);
@@ -184,9 +250,19 @@ export function DrillCreditsPanel({
 
   const creditTxs = useMemo(() => {
     if (!creditBySub) return [];
+    const txTime = (x) => {
+      const d = String(x.date ?? "").trim();
+      const p = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+      if (p) return new Date(+p[1], +p[2] - 1, +p[3], 12, 0, 0).getTime();
+      return parseLocalYmd(d).getTime();
+    };
     return [...txs]
       .filter((x) => x.creditId === creditBySub.id)
-      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      .sort((a, b) => {
+        const tb = txTime(b) - txTime(a);
+        if (tb !== 0) return tb;
+        return Number(b.id) - Number(a.id);
+      });
   }, [txs, creditBySub]);
 
   if (drillSub != null && creditBySub) {
@@ -206,21 +282,38 @@ export function DrillCreditsPanel({
           title={creditBySub.name}
           onBack={() => setDrillSub(null)}
           action={
-            <Pressable
-              onPress={() => deleteCredit(creditBySub)}
-              style={{
-                paddingVertical: 6,
-                paddingHorizontal: 10,
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: C.redBorder,
-                backgroundColor: C.redBg,
-              }}
-            >
-              <Text style={{ fontSize: 11, color: C.red }}>
-                {t("common.delete")}
-              </Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+              <Pressable
+                onPress={() => openEditCredit(creditBySub)}
+                style={{
+                  paddingVertical: 6,
+                  paddingHorizontal: 10,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: C.blue,
+                  backgroundColor: C.blueBg,
+                }}
+              >
+                <Text style={{ fontSize: 11, color: C.blue }}>
+                  {t("common.edit")}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => deleteCredit(creditBySub)}
+                style={{
+                  paddingVertical: 6,
+                  paddingHorizontal: 10,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: C.redBorder,
+                  backgroundColor: C.redBg,
+                }}
+              >
+                <Text style={{ fontSize: 11, color: C.red }}>
+                  {t("common.delete")}
+                </Text>
+              </Pressable>
+            </View>
           }
         >
           <View style={{ ...cS, marginBottom: 14 }}>
@@ -319,6 +412,11 @@ export function DrillCreditsPanel({
                   amountDigits: "",
                   dateStr: todayStr(),
                   desc: "",
+                  payAccount:
+                    (creditBySub.account ||
+                      defaultAccount ||
+                      accounts[0] ||
+                      "").trim(),
                 })
               }
               style={{
@@ -355,6 +453,7 @@ export function DrillCreditsPanel({
               txs={creditTxs}
               goals={[]}
               credits={credits}
+              creditCards={creditCards || []}
               emptyMsg={t("credits.noMovements")}
             />
           </View>
@@ -403,17 +502,53 @@ export function DrillCreditsPanel({
                   letterSpacing: 0.65,
                 }}
               >
+                {payModal.credit.direction === "given"
+                  ? t("credits.collectToAccount")
+                  : t("credits.payFromAccount")}
+              </Text>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: C.border,
+                  borderRadius: 14,
+                  overflow: "hidden",
+                  marginBottom: 14,
+                  backgroundColor: C.bg3,
+                }}
+              >
+                <ThemedPicker C={C}
+                  selectedValue={payModal.payAccount || accounts[0]}
+                  onValueChange={(v) =>
+                    setPayModal((p) => ({ ...p, payAccount: String(v) }))
+                  }
+                >
+                  {accounts.map((a) => (
+                    <Picker.Item key={a} label={a} value={a} color={C.text} />
+                  ))}
+                </ThemedPicker>
+              </View>
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: C.muted,
+                  marginBottom: 8,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.65,
+                }}
+              >
                 {t("tx.date")}
               </Text>
-              <TextInput
-                value={payModal.dateStr}
-                onChangeText={(v) =>
-                  setPayModal((p) => ({ ...p, dateStr: v }))
-                }
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={C.muted}
-                style={{ ...iS, marginBottom: 14 }}
-              />
+              <View style={{ marginBottom: 14 }}>
+                <TxDateField
+                  readOnly={false}
+                  dateStr={payModal.dateStr}
+                  onChangeYmd={(ymd) =>
+                    setPayModal((p) => ({ ...p, dateStr: ymd }))
+                  }
+                  C={C}
+                  iS={iS}
+                />
+              </View>
               <Text
                 style={{
                   fontSize: 11,
@@ -460,52 +595,98 @@ export function DrillCreditsPanel({
 
   const renderCard = (c) => {
     const paid = sumCreditPayments(txs, c.id);
-    const pct = creditProgressPct(c, paid);
+    const pctNum = Math.round(creditProgressPct(c, paid));
+    const barW = Math.min(100, creditProgressPct(c, paid));
+    const rowColor = c.color || C.blue;
+    const daysLeft =
+      c.endDate != null && String(c.endDate).trim()
+        ? Math.max(
+            0,
+            Math.round(
+              (parseLocalYmd(String(c.endDate)).getTime() - Date.now()) /
+                86400000,
+            ),
+          )
+        : null;
+    const subtitle =
+      daysLeft != null
+        ? t("goals.daysLeftLine", { count: daysLeft })
+        : `${t("common.startDate")}: ${c.startDate || "—"}`;
     return (
       <Pressable
         key={c.id}
         onPress={() => setDrillSub(c.id)}
-        style={{ ...cS, marginBottom: 10, borderColor: C.border }}
+        style={{
+          ...cS,
+          marginBottom: 12,
+          borderColor: rowColor + "44",
+        }}
       >
         <View
           style={{
             flexDirection: "row",
             justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 10,
+            alignItems: "flex-start",
+            gap: 10,
+            marginBottom: 8,
           }}
         >
-          <Text
-            style={{ fontSize: 15, fontWeight: "600", color: C.text, flex: 1 }}
-            numberOfLines={1}
-          >
-            {c.name}
-          </Text>
-          <Text style={{ fontSize: 12, color: C.muted }}>
-            {c.kind === "inkind" ? t("credits.kindInKind") : t("credits.kindCash")}
-          </Text>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              style={{ fontSize: 14, fontWeight: "500", color: C.text }}
+              numberOfLines={2}
+            >
+              {c.name}
+            </Text>
+            <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+              {subtitle}
+            </Text>
+            <Text style={{ fontSize: 10, color: C.hint, marginTop: 4 }}>
+              {c.kind === "inkind"
+                ? t("credits.kindInKind")
+                : t("credits.kindCash")}
+            </Text>
+          </View>
+          <View style={{ alignItems: "flex-end", flexShrink: 0 }}>
+            <Text
+              style={{ fontSize: 16, fontWeight: "500", color: rowColor }}
+            >
+              {pctNum}%
+            </Text>
+            <Text style={{ fontSize: 11, color: C.muted }}>
+              {fmt(paid)} / {fmt(c.principal)}
+            </Text>
+          </View>
         </View>
         <View
           style={{
             height: 6,
             backgroundColor: C.bg3,
-            borderRadius: 3,
+            borderRadius: 4,
             overflow: "hidden",
-            marginBottom: 8,
           }}
         >
           <View
             style={{
-              width: pct + "%",
+              width: barW + "%",
               height: "100%",
-              backgroundColor: c.color || C.blue,
-              borderRadius: 3,
+              backgroundColor: rowColor,
+              borderRadius: 4,
             }}
           />
         </View>
-        <Text style={{ fontSize: 12, color: C.muted }}>
-          {fmt(paid)} / {fmt(c.principal)} · {t("credits.remaining")}{" "}
-          {fmt(creditRemaining(c, paid))}
+        <Text style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+          {t("credits.remaining")} {fmt(creditRemaining(c, paid))}
+        </Text>
+        <Text
+          style={{
+            textAlign: "right",
+            marginTop: 6,
+            fontSize: 11,
+            color: C.hint,
+          }}
+        >
+          {t("drill.tapForDetail")}
         </Text>
       </Pressable>
     );
@@ -513,7 +694,29 @@ export function DrillCreditsPanel({
 
   return (
     <>
-      <DrillScreen title={t("credits.title")} onBack={closeDrill}>
+      <DrillScreen
+        title={t("credits.title")}
+        onBack={closeDrill}
+        action={
+          <Pressable
+            disabled={credits.length === 0}
+            onPress={() => setPickEditOpen(true)}
+            style={{
+              paddingVertical: 6,
+              paddingHorizontal: 10,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: C.blue,
+              backgroundColor: C.blueBg,
+              opacity: credits.length === 0 ? 0.45 : 1,
+            }}
+          >
+            <Text style={{ fontSize: 12, color: C.blue, fontWeight: "500" }}>
+              {t("common.edit")}
+            </Text>
+          </Pressable>
+        }
+      >
         <Pressable
           onPress={openNewCredit}
           style={{
@@ -578,14 +781,10 @@ export function DrillCreditsPanel({
         )}
       </DrillScreen>
 
-      {creditModalOpen && (
+      {pickEditOpen && (
         <Modal
-          onClose={() => {
-            setCreditModalOpen(false);
-            resetCreditForm();
-          }}
-          height="92vh"
-          title={t("credits.add")}
+          onClose={() => setPickEditOpen(false)}
+          title={t("credits.pickToEdit")}
         >
           <ScrollView
             keyboardShouldPersistTaps="handled"
@@ -594,80 +793,156 @@ export function DrillCreditsPanel({
               paddingBottom: formKbPad.paddingBottom,
             }}
           >
-            <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-              {t("credits.direction")}
-            </Text>
-            <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
-              {["received", "given"].map((d) => (
+            {credits.length === 0 ? (
+              <Text style={{ color: C.muted, fontSize: 14 }}>
+                {t("credits.emptyBoth")}
+              </Text>
+            ) : (
+              credits.map((c) => (
                 <Pressable
-                  key={d}
+                  key={c.id}
                   onPress={() => {
-                    setFormDir(d);
-                    if (d === "given") setFormKind("cash");
+                    setPickEditOpen(false);
+                    openEditCredit(c);
                   }}
                   style={{
-                    flex: 1,
-                    paddingVertical: 10,
-                    borderRadius: 10,
+                    paddingVertical: 14,
+                    paddingHorizontal: 12,
+                    borderRadius: 12,
+                    backgroundColor: C.bg3,
                     borderWidth: 1,
-                    borderColor: formDir === d ? C.blue : C.border,
-                    backgroundColor:
-                      formDir === d ? C.blueBg : C.bg3,
+                    borderColor: C.border,
+                    marginBottom: 10,
                   }}
                 >
                   <Text
-                    style={{
-                      textAlign: "center",
-                      fontSize: 13,
-                      color: formDir === d ? C.blue : C.muted,
-                      fontWeight: formDir === d ? "600" : "400",
-                    }}
+                    style={{ fontSize: 15, fontWeight: "600", color: C.text }}
                   >
-                    {d === "given"
+                    {c.name}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                    {c.direction === "given"
                       ? t("credits.directionGiven")
-                      : t("credits.directionReceived")}
+                      : t("credits.directionReceived")}{" "}
+                    · {fmt(c.principal)}
                   </Text>
                 </Pressable>
-              ))}
-            </View>
+              ))
+            )}
+          </ScrollView>
+        </Modal>
+      )}
 
-            {formDir === "received" ? (
+      {creditModalOpen && (
+        <Modal
+          onClose={() => {
+            setCreditModalOpen(false);
+            resetCreditForm();
+          }}
+          height="92vh"
+          title={
+            editingCreditId != null ? t("credits.editTitle") : t("credits.add")
+          }
+        >
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{
+              paddingTop: formKbPad.paddingTop,
+              paddingBottom: formKbPad.paddingBottom,
+            }}
+          >
+            {editingCreditId == null ? (
               <>
                 <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-                  {t("credits.moneyOrKind")}
+                  {t("credits.direction")}
                 </Text>
                 <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
-                  {["cash", "inkind"].map((k) => (
+                  {["received", "given"].map((d) => (
                     <Pressable
-                      key={k}
-                      onPress={() => setFormKind(k)}
+                      key={d}
+                      onPress={() => {
+                        setFormDir(d);
+                        if (d === "given") setFormKind("cash");
+                      }}
                       style={{
                         flex: 1,
                         paddingVertical: 10,
                         borderRadius: 10,
                         borderWidth: 1,
-                        borderColor: formKind === k ? C.gold : C.border,
+                        borderColor: formDir === d ? C.blue : C.border,
                         backgroundColor:
-                          formKind === k ? C.goldBg : C.bg3,
+                          formDir === d ? C.blueBg : C.bg3,
                       }}
                     >
                       <Text
                         style={{
                           textAlign: "center",
                           fontSize: 13,
-                          color: formKind === k ? C.gold : C.muted,
-                          fontWeight: formKind === k ? "600" : "400",
+                          color: formDir === d ? C.blue : C.muted,
+                          fontWeight: formDir === d ? "600" : "400",
                         }}
                       >
-                        {k === "cash"
-                          ? t("credits.kindCash")
-                          : t("credits.kindInKind")}
+                        {d === "given"
+                          ? t("credits.directionGiven")
+                          : t("credits.directionReceived")}
                       </Text>
                     </Pressable>
                   ))}
                 </View>
+
+                {formDir === "received" ? (
+                  <>
+                    <Text
+                      style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}
+                    >
+                      {t("credits.moneyOrKind")}
+                    </Text>
+                    <View
+                      style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}
+                    >
+                      {["cash", "inkind"].map((k) => (
+                        <Pressable
+                          key={k}
+                          onPress={() => setFormKind(k)}
+                          style={{
+                            flex: 1,
+                            paddingVertical: 10,
+                            borderRadius: 10,
+                            borderWidth: 1,
+                            borderColor: formKind === k ? C.gold : C.border,
+                            backgroundColor:
+                              formKind === k ? C.goldBg : C.bg3,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              textAlign: "center",
+                              fontSize: 13,
+                              color: formKind === k ? C.gold : C.muted,
+                              fontWeight: formKind === k ? "600" : "400",
+                            }}
+                          >
+                            {k === "cash"
+                              ? t("credits.kindCash")
+                              : t("credits.kindInKind")}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </>
+                ) : null}
               </>
-            ) : null}
+            ) : (
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: C.hint,
+                  marginBottom: 14,
+                }}
+              >
+                {t("credits.editLockedType")}
+              </Text>
+            )}
 
             <Text
               style={{
@@ -685,7 +960,7 @@ export function DrillCreditsPanel({
               onChangeText={setFormName}
               style={{ ...iS, marginBottom: 14 }}
               placeholder={t("credits.namePlaceholder")}
-              placeholderTextColor={C.muted}
+              placeholderTextColor={C.inputPlaceholder}
             />
 
             <Text
@@ -795,13 +1070,15 @@ export function DrillCreditsPanel({
             >
               {t("credits.startDate")}
             </Text>
-            <TextInput
-              value={formStart}
-              onChangeText={setFormStart}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={C.muted}
-              style={{ ...iS, marginBottom: 14 }}
-            />
+            <View style={{ marginBottom: 14 }}>
+              <TxDateField
+                readOnly={false}
+                dateStr={formStart}
+                onChangeYmd={setFormStart}
+                C={C}
+                iS={iS}
+              />
+            </View>
 
             <Text
               style={{
@@ -814,13 +1091,16 @@ export function DrillCreditsPanel({
             >
               {t("credits.endDateOptional")}
             </Text>
-            <TextInput
-              value={formEnd}
-              onChangeText={setFormEnd}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={C.muted}
-              style={{ ...iS, marginBottom: 14 }}
-            />
+            <View style={{ marginBottom: 14 }}>
+              <TxDateField
+                readOnly={false}
+                dateStr={formEnd}
+                onChangeYmd={setFormEnd}
+                C={C}
+                iS={iS}
+                allowEmpty
+              />
+            </View>
 
             <View
               style={{
@@ -919,7 +1199,9 @@ export function DrillCreditsPanel({
                   fontSize: TY.body,
                 }}
               >
-                {t("credits.saveCredit")}
+                {editingCreditId != null
+                  ? t("credits.saveEdit")
+                  : t("credits.saveCredit")}
               </Text>
             </Pressable>
           </ScrollView>

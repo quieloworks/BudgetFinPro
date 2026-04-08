@@ -9,9 +9,10 @@ type TxListProps = {
   emptyMsg?: string;
   goals?: { id: number; name: string }[] | undefined;
   credits?: { id: number; name: string }[] | undefined;
+  creditCards?: { id: number; name: string }[] | undefined;
 };
 
-export const TxList = ({ txs, emptyMsg, goals, credits }: TxListProps) => {
+export const TxList = ({ txs, emptyMsg, goals, credits, creditCards }: TxListProps) => {
   const { t } = useTranslation();
   const { C } = useAppTheme();
   return (
@@ -36,6 +37,22 @@ export const TxList = ({ txs, emptyMsg, goals, credits }: TxListProps) => {
         const creditTag = cred
           ? ` · ${t("credits.badge")}: ${cred.name}`
           : "";
+        const cc =
+          tx.creditCardId != null
+            ? (creditCards || []).find((c) => c.id === tx.creditCardId)
+            : null;
+        const ccPart = String(tx.creditCardPart || "");
+        let cardTag = "";
+        if (cc) {
+          if (ccPart === "charge")
+            cardTag = ` · ${t("creditCards.badgeCharge")}: ${cc.name}`;
+          else if (ccPart === "payment")
+            cardTag =
+              ` · ${t("creditCards.badgePayment")}: ${cc.name}` +
+              (tx.type === "expense" && tx.account
+                ? ` (${t("creditCards.fromAccount")}: ${String(tx.account)})`
+                : "");
+        }
         const sub =
           tx.type !== "transfer"
             ? null
@@ -86,6 +103,7 @@ export const TxList = ({ txs, emptyMsg, goals, credits }: TxListProps) => {
               >
                 {String(tx.date)} · {String(sub || tx.account)}
                 {creditTag}
+                {cardTag}
               </Text>
             </View>
             <Text

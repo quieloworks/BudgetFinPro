@@ -71,6 +71,27 @@ export function sumCreditPayments(
     .reduce((s, t) => s + (Number(t.amount) || 0), 0);
 }
 
+/** Pagos al crédito con fecha ≤ asOf (inclusive). */
+export function sumCreditPaymentsAsOf(
+  txs: {
+    date?: string;
+    creditId?: number | null;
+    creditPart?: string | null;
+    amount?: number;
+  }[],
+  creditId: number,
+  asOfYmd: string,
+): number {
+  return txs
+    .filter(
+      (t) =>
+        (t.date || "") <= asOfYmd &&
+        t.creditId === creditId &&
+        String(t.creditPart || "") === "payment",
+    )
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+}
+
 /** Lo que el calendario de cuotas “espera” acumulado hasta hoy (tope: principal). */
 export function expectedPaidBySchedule(
   credit: CreditRow,

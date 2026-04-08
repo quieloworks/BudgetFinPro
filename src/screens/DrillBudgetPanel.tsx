@@ -38,6 +38,7 @@ export function DrillBudgetPanel({
   txs,
   goals,
   credits,
+  creditCards,
   sections,
   archivedSections,
   budget,
@@ -317,6 +318,7 @@ export function DrillBudgetPanel({
             txs={secTxs}
             goals={goals}
             credits={credits}
+            creditCards={creditCards || []}
             emptyMsg={t("budget.emptyCategory")}
           />
         </View>

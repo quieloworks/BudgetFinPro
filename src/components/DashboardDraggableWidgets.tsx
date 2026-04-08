@@ -11,18 +11,12 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import * as Haptics from "expo-haptics";
 
 import type { ThemeTokens } from "../theme/tokens";
+import type { DashboardWidgetId } from "../constants/storage";
 import { fmt } from "../utils/format";
 import { sectionDotColor } from "../utils/sectionDotColor";
 
 const CARD_GAP = 12;
 const LONG_PRESS_MS = 1500;
-
-type DashboardWidgetId =
-  | "accounts"
-  | "trend"
-  | "budget"
-  | "goals"
-  | "recurring";
 
 export type DashboardDraggableWidgetsProps = {
   order: DashboardWidgetId[];
@@ -46,6 +40,24 @@ export type DashboardDraggableWidgetsProps = {
     target: number;
     deadline: string;
     color: string;
+  }[];
+  dashboardCreditPreviews: {
+    id: number;
+    name: string;
+    paid: number;
+    principal: number;
+    pct: number;
+    color: string;
+    subtitle: string;
+  }[];
+  dashboardCreditCardPreviews: {
+    id: number;
+    name: string;
+    balance: number;
+    limit: number;
+    pct: number;
+    color: string;
+    subtitle: string;
   }[];
   recTxs: {
     id: string;
@@ -87,6 +99,8 @@ function renderWidgetBody(
     maxTrend,
     dashboardBudgetRows,
     goals,
+    dashboardCreditPreviews,
+    dashboardCreditCardPreviews,
     recTxs,
   } = p;
 
@@ -463,6 +477,180 @@ function renderWidgetBody(
             </View>
           );
         })}
+      </>
+    );
+  }
+
+  if (item === "credits") {
+    return (
+      <>
+        <Text
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 16,
+            color: C.hint,
+            fontSize: 14,
+          }}
+        >
+          ›
+        </Text>
+        <Text
+          style={{
+            fontSize: 13,
+            fontWeight: "500",
+            marginBottom: 12,
+            color: C.text,
+          }}
+        >
+          {t("dashboard.creditsLoans")}
+        </Text>
+        {dashboardCreditPreviews.length === 0 ? (
+          <Text
+            style={{
+              fontSize: 12,
+              color: C.muted,
+              paddingVertical: 8,
+              width: "100%",
+              textAlign: "center",
+            }}
+          >
+            {t("dashboard.creditsEmpty")}
+          </Text>
+        ) : (
+          dashboardCreditPreviews.map((c) => (
+            <View key={c.id} style={{ marginBottom: 12 }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  marginBottom: 5,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 12, color: C.text, flex: 1, marginRight: 8 }}
+                  numberOfLines={1}
+                >
+                  {c.name}
+                </Text>
+                <Text style={{ color: C.muted, fontSize: 12, flexShrink: 0 }}>
+                  {fmt(c.paid)}{" "}
+                  <Text style={{ color: C.hint }}>/ {fmt(c.principal)}</Text>
+                </Text>
+              </View>
+              <View
+                style={{
+                  height: 5,
+                  backgroundColor: C.bg3,
+                  borderRadius: 4,
+                  overflow: "hidden",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${Math.min(100, c.pct)}%` as DimensionValue,
+                    height: "100%",
+                    backgroundColor: c.color,
+                    borderRadius: 4,
+                  }}
+                />
+              </View>
+              <Text
+                style={{ fontSize: 10, color: C.muted, marginTop: 3 }}
+                numberOfLines={2}
+              >
+                {c.pct}% · {c.subtitle}
+              </Text>
+            </View>
+          ))
+        )}
+      </>
+    );
+  }
+
+  if (item === "credit_cards") {
+    return (
+      <>
+        <Text
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 16,
+            color: C.hint,
+            fontSize: 14,
+          }}
+        >
+          ›
+        </Text>
+        <Text
+          style={{
+            fontSize: 13,
+            fontWeight: "500",
+            marginBottom: 12,
+            color: C.text,
+          }}
+        >
+          {t("dashboard.creditCards")}
+        </Text>
+        {dashboardCreditCardPreviews.length === 0 ? (
+          <Text
+            style={{
+              fontSize: 12,
+              color: C.muted,
+              paddingVertical: 8,
+              width: "100%",
+              textAlign: "center",
+            }}
+          >
+            {t("dashboard.creditCardsEmpty")}
+          </Text>
+        ) : (
+          dashboardCreditCardPreviews.map((c) => (
+            <View key={c.id} style={{ marginBottom: 12 }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  marginBottom: 5,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 12, color: C.text, flex: 1, marginRight: 8 }}
+                  numberOfLines={1}
+                >
+                  {c.name}
+                </Text>
+                <Text style={{ color: C.muted, fontSize: 12, flexShrink: 0 }}>
+                  {fmt(c.balance)}{" "}
+                  <Text style={{ color: C.hint }}>/ {fmt(c.limit)}</Text>
+                </Text>
+              </View>
+              <View
+                style={{
+                  height: 5,
+                  backgroundColor: C.bg3,
+                  borderRadius: 4,
+                  overflow: "hidden",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${Math.min(100, c.pct)}%` as DimensionValue,
+                    height: "100%",
+                    backgroundColor: c.color,
+                    borderRadius: 4,
+                  }}
+                />
+              </View>
+              <Text
+                style={{ fontSize: 10, color: C.muted, marginTop: 3 }}
+                numberOfLines={2}
+              >
+                {c.pct}% · {c.subtitle}
+              </Text>
+            </View>
+          ))
+        )}
       </>
     );
   }

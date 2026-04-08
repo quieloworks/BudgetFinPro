@@ -27,6 +27,8 @@ import { toBcp47Locale } from "../utils/i18nLocale";
 import { fmtMoneyDigits, stripMoneyToDigits } from "../utils/money";
 
 type Goal = { id: number; name: string };
+type PayableCredit = { id: number; name: string };
+type CreditCardOption = { id: number; name: string };
 
 export type TxFormState = {
   type: string;
@@ -37,11 +39,15 @@ export type TxFormState = {
   transferToAccount: string;
   transferToGoalId: number | null;
   transferFromGoalId: number | null;
+  transferToCreditId: number | null;
   transferLeg: string;
   date: string;
   recurring: boolean;
   freq: string;
   notes: string;
+  /** Gasto: sin TC, cargo a TC, o pago de TC. */
+  ccMode: "none" | "charge" | "payment";
+  creditCardId: number | null;
 };
 
 type TxTypeBarProps = {
@@ -77,6 +83,9 @@ export function TxTypeBar({ readOnly, fv, setFv, C }: TxTypeBarProps) {
               ...p,
               type: tp,
               recurring: tp === "transfer" ? false : p.recurring,
+              ...(tp !== "expense"
+                ? { ccMode: "none" as const, creditCardId: null }
+                : {}),
             }))
           }
           style={{
@@ -299,18 +308,25 @@ export function TxDateField({
   onChangeYmd,
   C,
   iS,
+  allowEmpty = false,
 }: {
   readOnly: boolean;
   dateStr: string;
   onChangeYmd: (ymd: string) => void;
   C: ThemeTokens;
   iS: object;
+  /** Si es true, se puede dejar sin fecha; al abrir el calendario se elige y se puede borrar con el enlace. */
+  allowEmpty?: boolean;
 }) {
+  const { t } = useTranslation();
   const [iosOpen, setIosOpen] = useState(false);
   const [androidOpen, setAndroidOpen] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
 
-  const dt = parseLocalYmd(dateStr);
+  const trimmed = String(dateStr ?? "").trim();
+  const effectiveYmd = trimmed || formatLocalYmd(new Date());
+  const dt = parseLocalYmd(effectiveYmd);
+  const emptyOptional = allowEmpty && !trimmed;
 
   const onPick = useCallback(
     (ev: DateTimePickerEvent, d?: Date) => {
@@ -338,14 +354,31 @@ export function TxDateField({
           },
         ]}
       >
-        <Text style={{ color: C.text, fontSize: TY.body }}>
-          {dateStr || formatLocalYmd(new Date())}
+        <Text
+          style={{
+            color: emptyOptional ? C.muted : C.text,
+            fontSize: TY.body,
+          }}
+        >
+          {emptyOptional
+            ? t("credits.dateTapOptional")
+            : trimmed || formatLocalYmd(new Date())}
         </Text>
       </Pressable>
+      {allowEmpty && trimmed && !readOnly ? (
+        <Pressable
+          onPress={() => onChangeYmd("")}
+          style={{ marginTop: 8, alignSelf: "flex-start", paddingVertical: 4 }}
+        >
+          <Text style={{ fontSize: 12, color: C.muted }}>
+            {t("credits.dateClear")}
+          </Text>
+        </Pressable>
+      ) : null}
       {Platform.OS === "web" ? (
         <WebCalendarModal
           visible={webOpen}
-          valueYmd={dateStr || formatLocalYmd(new Date())}
+          valueYmd={effectiveYmd}
           onSelect={onChangeYmd}
           onClose={() => setWebOpen(false)}
           C={C}
@@ -423,6 +456,8 @@ type TxFormProps = {
   iS: object;
   cS: object;
   goals: Goal[];
+  payableCredits: PayableCredit[];
+  creditCards: CreditCardOption[];
   accounts: string[];
   expenseSections: string[];
   /** Scroll del padre (modal) para dejar el input visible sobre el teclado. */
@@ -437,6 +472,8 @@ export function TxForm({
   iS,
   cS,
   goals,
+  payableCredits,
+  creditCards,
   accounts,
   expenseSections,
   scrollFieldIntoView,
@@ -497,6 +534,128 @@ export function TxForm({
           }}
         />
       </View>
+      {F.type === "expense" && creditCards.length > 0 && (
+        <View style={{ marginBottom: 14 }}>
+          <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+            {t("creditCards.txLink")}
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {(
+              [
+                { k: "none" as const, l: t("creditCards.modeNone") },
+                { k: "charge" as const, l: t("creditCards.modeCharge") },
+                { k: "payment" as const, l: t("creditCards.modePayment") },
+              ] as const
+            ).map((o) => (
+              <Pressable
+                key={o.k}
+                disabled={readOnly}
+                onPress={() =>
+                  !readOnly &&
+                  setF((p) => ({
+                    ...p,
+                    ccMode: o.k,
+                    creditCardId:
+                      o.k === "none"
+                        ? null
+                        : p.creditCardId ??
+                          creditCards[0]?.id ??
+                          null,
+                  }))
+                }
+                style={{
+                  paddingVertical: 8,
+                  paddingHorizontal: 10,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: F.ccMode === o.k ? C.purple : C.border,
+                  backgroundColor:
+                    F.ccMode === o.k ? C.purpleBg : C.bg3,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: F.ccMode === o.k ? C.purple : C.muted,
+                  }}
+                >
+                  {o.l}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          {F.ccMode !== "none" && (
+            <View style={{ marginTop: 12 }}>
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: C.muted,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                  marginBottom: 5,
+                }}
+              >
+                {t("creditCards.card")}
+              </Text>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: C.border,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  backgroundColor: C.bg3,
+                }}
+              >
+                <ThemedPicker
+                  C={C}
+                  enabled={!readOnly}
+                  selectedValue={F.creditCardId ?? creditCards[0]?.id}
+                  onValueChange={(v) =>
+                    !readOnly &&
+                    setF((p) => ({
+                      ...p,
+                      creditCardId: Number(v),
+                    }))
+                  }
+                >
+                  {creditCards.map((c) => (
+                    <Picker.Item
+                      key={c.id}
+                      label={c.name}
+                      value={c.id}
+                      color={C.text}
+                    />
+                  ))}
+                </ThemedPicker>
+              </View>
+            </View>
+          )}
+          {F.ccMode === "charge" && (
+            <Text
+              style={{
+                fontSize: 11,
+                color: C.hint,
+                marginTop: 10,
+                lineHeight: 16,
+              }}
+            >
+              {t("creditCards.chargeHint")}
+            </Text>
+          )}
+          {F.ccMode === "payment" && (
+            <Text
+              style={{
+                fontSize: 11,
+                color: C.hint,
+                marginTop: 10,
+                lineHeight: 16,
+              }}
+            >
+              {t("creditCards.paymentHint")}
+            </Text>
+          )}
+        </View>
+      )}
       {F.type === "transfer" && readOnly && (
         <View
           style={{
@@ -516,10 +675,15 @@ export function TxForm({
                   " → " +
                   (goals.find((g) => g.id === F.transferToGoalId)?.name ||
                     t("tx.goal"))
-                : (goals.find((g) => g.id === F.transferFromGoalId)?.name ||
-                    t("tx.goal")) +
-                  " → " +
-                  F.account}
+                : F.transferLeg === "to_credit"
+                  ? F.account +
+                    " → " +
+                    (payableCredits.find((c) => c.id === F.transferToCreditId)
+                      ?.name || t("credits.badge"))
+                  : (goals.find((g) => g.id === F.transferFromGoalId)?.name ||
+                      t("tx.goal")) +
+                    " → " +
+                    F.account}
           </Text>
         </View>
       )}
@@ -532,11 +696,22 @@ export function TxForm({
             {[
               { k: "to_account", l: t("tx.betweenAccounts") },
               { k: "to_goal", l: t("tx.toGoal") },
+              ...(payableCredits.length > 0
+                ? [{ k: "to_credit", l: t("tx.toCreditPay") }]
+                : []),
               { k: "from_goal", l: t("tx.fromGoal") },
             ].map((o) => (
               <Pressable
                 key={o.k}
-                onPress={() => setF((p) => ({ ...p, transferLeg: o.k }))}
+                onPress={() =>
+                  setF((p) => ({
+                    ...p,
+                    transferLeg: o.k,
+                    ...(o.k === "to_credit" && payableCredits[0]
+                      ? { transferToCreditId: payableCredits[0].id }
+                      : {}),
+                  }))
+                }
                 style={{
                   paddingVertical: 8,
                   paddingHorizontal: 12,
@@ -728,6 +903,54 @@ export function TxForm({
               </View>
             </View>
           )}
+          {F.transferLeg === "to_credit" && payableCredits.length > 0 && (
+            <View>
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: C.muted,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                  marginBottom: 5,
+                }}
+              >
+                {t("tx.destCredit")}
+              </Text>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: C.border,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  backgroundColor: C.bg3,
+                }}
+              >
+                <ThemedPicker
+                  C={C}
+                  enabled={!readOnly}
+                  selectedValue={
+                    F.transferToCreditId || payableCredits[0]?.id
+                  }
+                  onValueChange={(v) =>
+                    !readOnly &&
+                    setF((p) => ({
+                      ...p,
+                      transferToCreditId: Number(v),
+                    }))
+                  }
+                >
+                  {payableCredits.map((c) => (
+                    <Picker.Item
+                      key={c.id}
+                      label={c.name}
+                      value={c.id}
+                      color={C.text}
+                    />
+                  ))}
+                </ThemedPicker>
+              </View>
+            </View>
+          )}
           {F.transferLeg === "from_goal" && (
             <View>
               <Text
@@ -818,55 +1041,137 @@ export function TxForm({
             marginBottom: 12,
           }}
         >
-          {[
-            {
-              l: t("picker.section"),
-              k: "section" as const,
-              opts: expenseSections,
-            },
-            { l: t("picker.account"), k: "account" as const, opts: accounts },
-          ].map((f) => (
-            <View key={f.k} style={{ flex: 1, minWidth: 140 }}>
-              <Text
-                style={{
-                  fontSize: 11,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.5,
-                  marginBottom: 5,
-                }}
-              >
-                {f.l}
-              </Text>
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: C.border,
-                  borderRadius: 10,
-                  overflow: "hidden",
-                  backgroundColor: C.bg3,
-                }}
-              >
-                <ThemedPicker
-                  C={C}
-                  enabled={!readOnly}
-                  selectedValue={F[f.k]}
-                  onValueChange={(v) =>
-                    !readOnly &&
-                    setF((p) =>
-                      f.k === "section"
-                        ? { ...p, section: String(v) }
-                        : { ...p, account: String(v) },
-                    )
-                  }
+          {F.type === "expense" && F.ccMode === "payment" ? (
+            <>
+              <View style={{ flex: 1, minWidth: 140 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    marginBottom: 5,
+                  }}
                 >
-                  {f.opts.map((o) => (
-                    <Picker.Item key={o} label={o} value={o} color={C.text} />
-                  ))}
-                </ThemedPicker>
+                  {t("picker.section")}
+                </Text>
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: C.border,
+                    borderRadius: 10,
+                    paddingVertical: 14,
+                    paddingHorizontal: 12,
+                    backgroundColor: C.bg4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      color: C.hint,
+                      lineHeight: 18,
+                    }}
+                  >
+                    {t("creditCards.sectionPaymentLocked")}
+                  </Text>
+                </View>
               </View>
-            </View>
-          ))}
+              <View style={{ flex: 1, minWidth: 140 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    marginBottom: 5,
+                  }}
+                >
+                  {t("picker.account")}
+                </Text>
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: C.border,
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    backgroundColor: C.bg3,
+                  }}
+                >
+                  <ThemedPicker
+                    C={C}
+                    enabled={!readOnly}
+                    selectedValue={F.account}
+                    onValueChange={(v) =>
+                      !readOnly &&
+                      setF((p) => ({ ...p, account: String(v) }))
+                    }
+                  >
+                    {accounts.map((o) => (
+                      <Picker.Item key={o} label={o} value={o} color={C.text} />
+                    ))}
+                  </ThemedPicker>
+                </View>
+              </View>
+            </>
+          ) : (
+            [
+              {
+                l: t("picker.section"),
+                k: "section" as const,
+                opts: expenseSections,
+              },
+              ...(F.type === "expense" && F.ccMode === "charge"
+                ? []
+                : [
+                    {
+                      l: t("picker.account"),
+                      k: "account" as const,
+                      opts: accounts,
+                    },
+                  ]),
+            ].map((f) => (
+              <View key={f.k} style={{ flex: 1, minWidth: 140 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    marginBottom: 5,
+                  }}
+                >
+                  {f.l}
+                </Text>
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: C.border,
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    backgroundColor: C.bg3,
+                  }}
+                >
+                  <ThemedPicker
+                    C={C}
+                    enabled={!readOnly}
+                    selectedValue={F[f.k]}
+                    onValueChange={(v) =>
+                      !readOnly &&
+                      setF((p) =>
+                        f.k === "section"
+                          ? { ...p, section: String(v) }
+                          : { ...p, account: String(v) },
+                      )
+                    }
+                  >
+                    {f.opts.map((o) => (
+                      <Picker.Item key={o} label={o} value={o} color={C.text} />
+                    ))}
+                  </ThemedPicker>
+                </View>
+              </View>
+            ))
+          )}
         </View>
       )}
       <View style={{ marginBottom: 14 }}>

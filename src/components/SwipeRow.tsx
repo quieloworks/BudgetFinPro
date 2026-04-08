@@ -11,9 +11,11 @@ type SwipeRowProps = {
   tx: Record<string, unknown>;
   onView: (t: Record<string, unknown>, mode: string) => void;
   goals?: { id: number; name: string }[];
+  credits?: { id: number; name: string }[];
+  creditCards?: { id: number; name: string }[];
 };
 
-export const SwipeRow = ({ tx, onView, goals }: SwipeRowProps) => {
+export const SwipeRow = ({ tx, onView, goals, credits, creditCards }: SwipeRowProps) => {
   const { t } = useTranslation();
   const { C } = useAppTheme();
   const swipeRef = useRef<Swipeable>(null);
@@ -92,6 +94,27 @@ export const SwipeRow = ({ tx, onView, goals }: SwipeRowProps) => {
         ? C.redBorder
         : C.blueBorder;
   const sym = tx.type === "income" ? "↑" : tx.type === "expense" ? "↓" : "⇄";
+  const cred =
+    tx.creditId != null
+      ? (credits || []).find((c) => c.id === tx.creditId)
+      : null;
+  const ccRow =
+    tx.creditCardId != null
+      ? (creditCards || []).find((c) => c.id === tx.creditCardId)
+      : null;
+  const ccPart = String(tx.creditCardPart || "");
+  let extraMeta = "";
+  if (cred) extraMeta += ` · ${t("credits.badge")}: ${cred.name}`;
+  if (ccRow) {
+    if (ccPart === "charge")
+      extraMeta += ` · ${t("creditCards.badgeCharge")}: ${ccRow.name}`;
+    else if (ccPart === "payment")
+      extraMeta +=
+        ` · ${t("creditCards.badgePayment")}: ${ccRow.name}` +
+        (tx.type === "expense" && tx.account
+          ? ` (${t("creditCards.fromAccount")})`
+          : "");
+  }
   return (
     <View style={{ marginBottom: 8 }}>
       <Swipeable
@@ -167,8 +190,11 @@ export const SwipeRow = ({ tx, onView, goals }: SwipeRowProps) => {
                 <Text style={{ fontSize: TY.caption, color: C.muted }}>
                   {tx.type === "transfer"
                     ? String(transferSub() ?? "")
-                    : String(tx.section) + " · " + String(tx.account)}{" "}
+                    : ccPart === "charge"
+                      ? String(tx.section) + " · " + t("creditCards.chargeShort")
+                      : String(tx.section) + " · " + String(tx.account)}{" "}
                   · {String(tx.date)}
+                  {extraMeta}
                 </Text>
                 {tx.recurring ? <Text style={{ color: C.gold }}> ↻</Text> : null}
               </View>
