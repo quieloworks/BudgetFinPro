@@ -99,6 +99,12 @@ import {
   formScrollPaddingFromKb,
   useKeyboardHeight,
 } from "../hooks/useKeyboardFormScrollPadding";
+import {
+  AI_SETTINGS_STORAGE_KEY,
+  defaultAiSettings,
+  parseAiSettings,
+  callAiComplete,
+} from "../utils/aiProvider";
 
 const AI_WELCOME_PLACEHOLDER = "__AI_WELCOME__";
 
@@ -421,10 +427,6 @@ export function FinanceScreen() {
     () => formScrollPaddingFromKb(kbH, 4, 24),
     [kbH],
   );
-  const aiScrollKbPad = useMemo(
-    () => formScrollPaddingFromKb(kbH, 4, 8),
-    [kbH],
-  );
   const scrollTxFieldIntoView = useCallback((inputRef) => {
     const sv = txFormScrollRef.current;
     const el = inputRef?.current;
@@ -521,6 +523,36 @@ export function FinanceScreen() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiImage, setAiImage] = useState(null);
   const aiRef = useRef(null);
+  const [aiSettings, setAiSettings] = useState(() => defaultAiSettings());
+  const [aiSettingsHydrated, setAiSettingsHydrated] = useState(false);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
+  const [aiConfigDraft, setAiConfigDraft] = useState(() => defaultAiSettings());
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(AI_SETTINGS_STORAGE_KEY);
+        if (raw) {
+          const p = parseAiSettings(JSON.parse(raw));
+          if (p) {
+            setAiSettings(p);
+            setAiConfigDraft(p);
+          }
+        }
+      } catch {
+        /* noop */
+      }
+      setAiSettingsHydrated(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!aiSettingsHydrated) return;
+    void AsyncStorage.setItem(
+      AI_SETTINGS_STORAGE_KEY,
+      JSON.stringify(aiSettings),
+    );
+  }, [aiSettings, aiSettingsHydrated]);
 
   useEffect(() => {
     if (tab !== "reports") {
@@ -565,6 +597,10 @@ export function FinanceScreen() {
       }
       if (txModal) {
         setTxModal(null);
+        return true;
+      }
+      if (aiConfigOpen) {
+        setAiConfigOpen(false);
         return true;
       }
       if (aiOpen) {
@@ -649,6 +685,7 @@ export function FinanceScreen() {
     recModal,
     accModal,
     txModal,
+    aiConfigOpen,
     aiOpen,
     settingsOpen,
     tab,
@@ -1689,65 +1726,57 @@ export function FinanceScreen() {
       today: todayStr(),
     });
     try {
-      const uc = aiImage
-        ? [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: aiImage.type,
-                data: aiImage.data,
-              },
-            },
-            {
-              type: "text",
-              text: msg || t("ai.analyzeTicket"),
-            },
-          ]
-        : msg;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 600,
-          system: sys,
-          messages: [{ role: "user", content: uc }],
-        }),
+      const result = await callAiComplete(aiSettings, {
+        system: sys,
+        userText: msg || (aiImage ? t("ai.analyzeTicket") : ""),
+        image: aiImage
+          ? { data: aiImage.data, type: aiImage.type || "image/jpeg" }
+          : null,
       });
-      const data = await res.json();
-      const raw =
-        (data.content && data.content[0] && data.content[0].text) ||
-        t("ai.processFail");
-      const jm = raw.match(/\{[\s\S]*?"action"\s*:\s*"add_tx"[\s\S]*?\}/);
-      if (jm) {
-        try {
-          const tx = JSON.parse(jm[0]);
-          const nT = {
-            id: Date.now(),
-            type: tx.type,
-            amount: parseFloat(tx.amount),
-            desc: tx.desc,
-            section: tx.section,
-            account: tx.account || defaultAccount,
-            date: tx.date || todayStr(),
-            recurring: false,
-            freq: "",
-            notes: tx.notes || "",
-          };
-          setTxs((p) => [...p, nT]);
-          const clean = raw
-            .replace(jm[0], "")
-            .replace(/```json|```/g, "")
-            .trim();
-          setAiMsgs((p) => [
-            ...p,
-            { role: "assistant", text: clean || t("ai.registered"), highlight: nT },
-          ]);
-        } catch (e) {
-          setAiMsgs((p) => [...p, { role: "assistant", text: raw }]);
-        }
-      } else setAiMsgs((p) => [...p, { role: "assistant", text: raw }]);
+      if (!result.ok) {
+        const errLine =
+          result.error === "missing_api_key"
+            ? t("ai.errorMissingKey")
+            : result.error === "empty_response"
+              ? t("ai.errorEmpty")
+              : t("ai.errorGeneric", { message: result.error });
+        setAiMsgs((p) => [...p, { role: "assistant", text: errLine }]);
+      } else {
+        const raw = result.text;
+        const jm = raw.match(/\{[\s\S]*?"action"\s*:\s*"add_tx"[\s\S]*?\}/);
+        if (jm) {
+          try {
+            const tx = JSON.parse(jm[0]);
+            const nT = {
+              id: Date.now(),
+              type: tx.type,
+              amount: parseFloat(tx.amount),
+              desc: tx.desc,
+              section: tx.section,
+              account: tx.account || defaultAccount,
+              date: tx.date || todayStr(),
+              recurring: false,
+              freq: "",
+              notes: tx.notes || "",
+            };
+            setTxs((p) => [...p, nT]);
+            const clean = raw
+              .replace(jm[0], "")
+              .replace(/```json|```/g, "")
+              .trim();
+            setAiMsgs((p) => [
+              ...p,
+              {
+                role: "assistant",
+                text: clean || t("ai.registered"),
+                highlight: nT,
+              },
+            ]);
+          } catch (e) {
+            setAiMsgs((p) => [...p, { role: "assistant", text: raw }]);
+          }
+        } else setAiMsgs((p) => [...p, { role: "assistant", text: raw }]);
+      }
     } catch (e) {
       setAiMsgs((p) => [
         ...p,
@@ -5547,6 +5576,26 @@ export function FinanceScreen() {
                   </Text>
                   <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
                 </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setAiConfigDraft({ ...aiSettings });
+                    setAiConfigOpen(true);
+                    closeSettingsDrawer();
+                  }}
+                  style={{
+                    ...cS,
+                    paddingVertical: 18,
+                    paddingHorizontal: 18,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Text style={{ fontSize: TY.body, color: C.text }}>
+                    {t("settings.aiConfig")}
+                  </Text>
+                  <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
+                </Pressable>
                 <Text
                   style={{
                     fontSize: TY.caption,
@@ -6086,41 +6135,52 @@ export function FinanceScreen() {
 
         {/* AI CHAT */}
         {aiOpen && (
-          <Modal onClose={() => setAiOpen(false)} height="78vh">
+          <Modal onClose={() => setAiOpen(false)} height="92vh">
             <View
               style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 10,
+                flex: 1,
+                minHeight: 0,
+                width: "100%",
+                flexDirection: "column",
               }}
             >
-              <View>
-                <Text
-                  style={{ fontSize: 15, fontWeight: "500", color: C.text }}
-                >
-                  {t("ai.title")}
-                </Text>
-                <Text style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>
-                  {t("ai.sub")}
-                </Text>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 12,
+                  flexShrink: 0,
+                }}
+              >
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text
+                    style={{ fontSize: 15, fontWeight: "500", color: C.text }}
+                  >
+                    {t("ai.title")}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>
+                    {t("ai.sub")}
+                  </Text>
+                </View>
+                <Pressable onPress={() => setAiOpen(false)} hitSlop={12}>
+                  <Text style={{ fontSize: 22, color: C.muted }}>×</Text>
+                </Pressable>
               </View>
-              <Pressable onPress={() => setAiOpen(false)}>
-                <Text style={{ fontSize: 22, color: C.muted }}>×</Text>
-              </Pressable>
-            </View>
-            <ScrollView
-              ref={aiRef}
-              style={{ flex: 1, maxHeight: 280 }}
-              contentContainerStyle={{
-                gap: 10,
-                paddingTop: aiScrollKbPad.paddingTop,
-                paddingBottom: aiScrollKbPad.paddingBottom,
-              }}
-              onContentSizeChange={() =>
-                aiRef.current?.scrollToEnd({ animated: true })
-              }
-            >
+              <ScrollView
+                ref={aiRef}
+                style={{ flex: 1, minHeight: 160 }}
+                contentContainerStyle={{
+                  gap: 10,
+                  paddingTop: 4,
+                  paddingBottom: 16,
+                  flexGrow: 1,
+                }}
+                keyboardShouldPersistTaps="handled"
+                onContentSizeChange={() =>
+                  aiRef.current?.scrollToEnd({ animated: true })
+                }
+              >
               {aiMsgs.map((m, i) => (
                 <View
                   key={i}
@@ -6207,6 +6267,7 @@ export function FinanceScreen() {
                   borderWidth: 1,
                   borderColor: C.blue,
                   marginBottom: 6,
+                  flexShrink: 0,
                 }}
               >
                 <Text style={{ fontSize: 12, color: C.blue, flex: 1 }}>
@@ -6221,10 +6282,11 @@ export function FinanceScreen() {
               style={{
                 flexDirection: "row",
                 gap: 8,
-                paddingTop: 8,
+                paddingTop: 10,
                 borderTopWidth: 1,
                 borderTopColor: C.border,
                 alignItems: "center",
+                flexShrink: 0,
               }}
             >
               <Pressable
@@ -6271,6 +6333,226 @@ export function FinanceScreen() {
                 <Text style={{ color: C.onPrimary, fontSize: 14 }}>↑</Text>
               </Pressable>
             </View>
+            </View>
+          </Modal>
+        )}
+
+        {aiConfigOpen && (
+          <Modal
+            onClose={() => setAiConfigOpen(false)}
+            height="92vh"
+            title={t("ai.configTitle")}
+          >
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              style={{ flex: 1, width: "100%" }}
+              contentContainerStyle={{
+                paddingBottom: 24 + mainScrollKbPad.paddingBottom,
+                gap: 14,
+              }}
+            >
+              <Text style={{ fontSize: 13, color: C.muted, lineHeight: 20 }}>
+                {t("ai.configIntro")}
+              </Text>
+              <View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    marginBottom: 8,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {t("ai.configProvider")}
+                </Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                  {(
+                    [
+                      ["openai_compatible", t("ai.providerOpenAiCompat")],
+                      ["anthropic", t("ai.providerAnthropic")],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <Pressable
+                      key={k}
+                      onPress={() =>
+                        setAiConfigDraft((p) => ({ ...p, provider: k }))
+                      }
+                      style={{
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor:
+                          aiConfigDraft.provider === k ? C.blue : C.border,
+                        backgroundColor:
+                          aiConfigDraft.provider === k ? C.blueBg : C.bg3,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color:
+                            aiConfigDraft.provider === k ? C.blue : C.muted,
+                        }}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              <View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    marginBottom: 6,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {t("ai.configBaseUrl")}
+                </Text>
+                <TextInput
+                  value={aiConfigDraft.baseUrl}
+                  onChangeText={(v) =>
+                    setAiConfigDraft((p) => ({ ...p, baseUrl: v }))
+                  }
+                  placeholder={t("ai.configBaseUrlPh")}
+                  placeholderTextColor={C.inputPlaceholder}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={iS}
+                />
+              </View>
+              <View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    marginBottom: 6,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {t("ai.configApiKey")}
+                </Text>
+                <TextInput
+                  value={aiConfigDraft.apiKey}
+                  onChangeText={(v) =>
+                    setAiConfigDraft((p) => ({ ...p, apiKey: v }))
+                  }
+                  placeholder={t("ai.configApiKeyPh")}
+                  placeholderTextColor={C.inputPlaceholder}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={iS}
+                />
+              </View>
+              <View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    marginBottom: 6,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {t("ai.configModel")}
+                </Text>
+                <TextInput
+                  value={aiConfigDraft.model}
+                  onChangeText={(v) =>
+                    setAiConfigDraft((p) => ({ ...p, model: v }))
+                  }
+                  placeholder={
+                    aiConfigDraft.provider === "anthropic"
+                      ? t("ai.configModelPhAnthropic")
+                      : t("ai.configModelPhOpenAi")
+                  }
+                  placeholderTextColor={C.inputPlaceholder}
+                  autoCapitalize="none"
+                  style={iS}
+                />
+              </View>
+              <View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    marginBottom: 6,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {t("ai.configMaxTokens")}
+                </Text>
+                <TextInput
+                  value={String(aiConfigDraft.maxTokens)}
+                  onChangeText={(v) => {
+                    const n = parseInt(String(v).replace(/\D/g, ""), 10);
+                    setAiConfigDraft((p) => ({
+                      ...p,
+                      maxTokens: Number.isFinite(n) && n > 0 ? Math.min(8192, n) : p.maxTokens,
+                    }));
+                  }}
+                  keyboardType="number-pad"
+                  style={iS}
+                />
+              </View>
+              {aiConfigDraft.provider === "anthropic" ? (
+                <View>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      color: C.muted,
+                      marginBottom: 6,
+                      textTransform: "uppercase",
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    {t("ai.configAnthropicVersion")}
+                  </Text>
+                  <TextInput
+                    value={aiConfigDraft.anthropicVersion}
+                    onChangeText={(v) =>
+                      setAiConfigDraft((p) => ({
+                        ...p,
+                        anthropicVersion: v,
+                      }))
+                    }
+                    autoCapitalize="none"
+                    style={iS}
+                  />
+                </View>
+              ) : null}
+              <Pressable
+                onPress={() => {
+                  setAiSettings({ ...aiConfigDraft });
+                  setAiConfigOpen(false);
+                }}
+                style={{
+                  paddingVertical: 14,
+                  borderRadius: 12,
+                  backgroundColor: C.blue,
+                  marginTop: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    textAlign: "center",
+                    color: C.onPrimary,
+                    fontWeight: "600",
+                    fontSize: 15,
+                  }}
+                >
+                  {t("ai.configSave")}
+                </Text>
+              </Pressable>
+            </ScrollView>
           </Modal>
         )}
 
