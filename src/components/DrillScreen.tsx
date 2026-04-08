@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
-import { View, Text, Pressable, Platform } from "react-native";
+import { useMemo } from "react";
+import { View, Text, Pressable } from "react-native";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  formScrollPaddingFromKb,
+  useKeyboardHeight,
+} from "../hooks/useKeyboardFormScrollPadding";
 import { useAppTheme } from "../theme/ThemeContext";
 import { TY } from "../theme/typography";
 
@@ -20,6 +25,12 @@ export const DrillScreen = ({
 }: DrillScreenProps) => {
   const { C } = useAppTheme();
   const insets = useSafeAreaInsets();
+  const kbH = useKeyboardHeight();
+  const baseBottom = Math.max(24, insets.bottom + 16);
+  const kbPad = useMemo(
+    () => formScrollPaddingFromKb(kbH, 18, baseBottom),
+    [kbH, baseBottom],
+  );
   return (
     <View
       style={{
@@ -84,12 +95,11 @@ export const DrillScreen = ({
         style={{ flex: 1 }}
         contentContainerStyle={{
           paddingHorizontal: 18,
-          paddingTop: 18,
-          paddingBottom: Math.max(24, insets.bottom + 16),
+          paddingTop: kbPad.paddingTop,
+          paddingBottom: kbPad.paddingBottom,
         }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         nestedScrollEnabled
       >
         {children}

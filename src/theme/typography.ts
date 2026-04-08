@@ -15,7 +15,7 @@ export const TY = {
   hero: 48,
   heroSecondary: 21,
   tabIcon: 23,
-  tabLabel: 16,
+  tabLabel: 12,
   inputMoney: 36,
   drillChevron: 34,
 } as const;

@@ -1,7 +1,5 @@
 import { MN } from "../constants/calendar";
 
-export const todayStr = () => new Date().toISOString().slice(0, 10);
-
 /** Fecha local medianoche para evitar desfaces UTC al editar YYYY-MM-DD. */
 export const parseLocalYmd = (ymd: string): Date => {
   const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || "").trim());
@@ -18,6 +16,23 @@ export const formatLocalYmd = (dt: Date): string => {
   const d = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 };
+
+/** “Hoy” en calendario local (no `toISOString()` UTC). */
+export const todayStr = () => formatLocalYmd(new Date());
+
+/**
+ * Normaliza tx.date (YYYY-MM-DD, ISO, mes sin cero…) a "YYYY-MM" para agrupar por mes.
+ */
+export function yearMonthKeyFromTxDate(dateStr: unknown): string | null {
+  const raw = String(dateStr ?? "").trim();
+  if (!raw) return null;
+  const p = /^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/.exec(raw);
+  if (!p) return null;
+  const monthNum = Number(p[2]);
+  if (monthNum < 1 || monthNum > 12) return null;
+  const mo = String(monthNum).padStart(2, "0");
+  return `${p[1]}-${mo}`;
+}
 
 /**
  * Meses consecutivos para gráficos de balance (izquierda = más antiguo).
@@ -40,4 +55,14 @@ export function rollingChartMonthBuckets(
     });
   }
   return out;
+}
+
+/**
+ * Mismos meses que rollingChartMonthBuckets, pero el primer elemento es el mes en
+ * curso y el último el más antiguo (hasta `count` meses).
+ */
+export function rollingChartMonthBucketsNewestFirst(
+  count: number,
+): { key: string; label: string }[] {
+  return [...rollingChartMonthBuckets(count)].reverse();
 }

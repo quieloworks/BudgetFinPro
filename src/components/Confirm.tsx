@@ -1,4 +1,5 @@
 import { View, Text, Pressable, Modal as RNModal } from "react-native";
+import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../theme/ThemeContext";
 import { TY } from "../theme/typography";
@@ -11,6 +12,7 @@ type ConfirmProps = {
 };
 
 export const Confirm = ({ msg, onYes, onNo, confirmLabel }: ConfirmProps) => {
+  const { t } = useTranslation();
   const { C } = useAppTheme();
   const insets = useSafeAreaInsets();
   const pad = Math.max(20, 12 + insets.top, 12 + insets.bottom);
@@ -67,7 +69,7 @@ export const Confirm = ({ msg, onYes, onNo, confirmLabel }: ConfirmProps) => {
                   fontSize: TY.body,
                 }}
               >
-                Cancelar
+                {t("confirm.cancel")}
               </Text>
             </Pressable>
             <Pressable
@@ -87,7 +89,7 @@ export const Confirm = ({ msg, onYes, onNo, confirmLabel }: ConfirmProps) => {
                   fontWeight: "600",
                 }}
               >
-                {confirmLabel || "Eliminar"}
+                {confirmLabel || t("confirm.delete")}
               </Text>
             </Pressable>
           </View>

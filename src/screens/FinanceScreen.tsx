@@ -1,12 +1,12 @@
 // @ts-nocheck
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import {
   View,
   Text,
   TextInput,
   Pressable,
   ScrollView,
-  Keyboard,
   Platform,
   Switch,
   Animated,
@@ -25,15 +25,23 @@ import { ThemedPicker } from "../components/ThemedPicker";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
+import { Ionicons } from "@expo/vector-icons";
 
 import { T_DARK } from "../theme/tokens";
 import { TY, TAB_CONTENT_H } from "../theme/typography";
 import { useAppTheme } from "../theme/ThemeContext";
-import { MN, DN } from "../constants/calendar";
-import { FREQ } from "../constants/frequencies";
+import { FREQ_KEYS } from "../constants/frequencies";
 import { SECS } from "../constants/sections";
-import { FINPRO_STORAGE_KEY } from "../constants/storage";
-import { todayStr, rollingChartMonthBuckets } from "../utils/dates";
+import { FINPRO_STORAGE_KEY, LANGUAGE_STORAGE_KEY } from "../constants/storage";
+import { sortedSupportedLocales } from "../constants/languages";
+import { setAppLanguage } from "../i18n/i18n";
+import { toBcp47Locale } from "../utils/i18nLocale";
+import {
+  todayStr,
+  rollingChartMonthBuckets,
+  rollingChartMonthBucketsNewestFirst,
+  yearMonthKeyFromTxDate,
+} from "../utils/dates";
 import {
   totalGoalSavedAsOfDate,
   chartMonthEndDate,
@@ -57,11 +65,95 @@ import { BarChart } from "../components/charts/BarChart";
 import { LineChart } from "../components/charts/LineChart";
 import { SwipeRow } from "../components/SwipeRow";
 import { TxList } from "../components/TxList";
-import { TxForm, TxTypeBar } from "../components/TxModalForm";
+import { TxForm, TxTypeBar, TxDateField } from "../components/TxModalForm";
+import {
+  formScrollPaddingFromKb,
+  useKeyboardHeight,
+} from "../hooks/useKeyboardFormScrollPadding";
+
+const AI_WELCOME_PLACEHOLDER = "__AI_WELCOME__";
+
+function normSec(s) {
+  if (s == null) return "";
+  return typeof s === "string" ? s.trim() : String(s).trim();
+}
+
+function dateStrLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Filtra transacciones por periodo (reportes). Claves: day | week | month |
+ * d30 | d60 | d90 | m6 | y1
+ */
+function filterTxsByReportRange(txs, rangeKey) {
+  const now = new Date();
+  const today = dateStrLocal(now);
+  if (rangeKey === "day") {
+    return txs.filter((t) => t.date === today);
+  }
+  if (rangeKey === "week") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 6);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  if (rangeKey === "month") {
+    const prefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return txs.filter((t) => t.date.startsWith(prefix));
+  }
+  if (rangeKey === "d30") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 29);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  if (rangeKey === "d60") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 59);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  if (rangeKey === "d90") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 89);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  if (rangeKey === "m6") {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - 6);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  if (rangeKey === "y1") {
+    const d = new Date(now);
+    d.setFullYear(d.getFullYear() - 1);
+    const from = dateStrLocal(d);
+    return txs.filter((t) => t.date >= from && t.date <= today);
+  }
+  return txs;
+}
 
 export function FinanceScreen() {
   const insets = useSafeAreaInsets();
   const { C, themeMode, setThemeMode } = useAppTheme();
+  const { t, i18n } = useTranslation();
+  const localeTag = useMemo(
+    () => toBcp47Locale(i18n.language),
+    [i18n.language],
+  );
+  const headerMonthSubtitle = useMemo(
+    () =>
+      new Date().toLocaleDateString(localeTag, {
+        month: "long",
+        year: "numeric",
+      }),
+    [localeTag],
+  );
   const { height: windowHeight } = useWindowDimensions();
   const cS = useMemo(
     () => ({
@@ -242,21 +334,36 @@ export function FinanceScreen() {
   };
   const [form, setForm] = useState(blankForm());
   const txFormScrollRef = useRef(null);
-  /** Altura del teclado: mismo slack arriba y abajo del TxForm para poder scrollear hacia abajo o hacia arriba con el teclado abierto. */
-  const [txFormKbPad, setTxFormKbPad] = useState(0);
-  useEffect(() => {
-    const showEv =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEv =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const show = Keyboard.addListener(showEv, (e) =>
-      setTxFormKbPad(e.endCoordinates.height),
-    );
-    const hide = Keyboard.addListener(hideEv, () => setTxFormKbPad(0));
-    return () => {
-      show.remove();
-      hide.remove();
+  const kbH = useKeyboardHeight();
+  const formKbPad = useMemo(
+    () => formScrollPaddingFromKb(kbH, 4, 28),
+    [kbH],
+  );
+  const mainScrollKbPad = useMemo(
+    () => formScrollPaddingFromKb(kbH, 4, 24),
+    [kbH],
+  );
+  const aiScrollKbPad = useMemo(
+    () => formScrollPaddingFromKb(kbH, 4, 8),
+    [kbH],
+  );
+  const scrollTxFieldIntoView = useCallback((inputRef) => {
+    const sv = txFormScrollRef.current;
+    const el = inputRef?.current;
+    if (!sv || !el) return;
+    if (typeof sv.scrollResponderScrollNativeHandleToKeyboard !== "function")
+      return;
+    const run = () => {
+      try {
+        sv.scrollResponderScrollNativeHandleToKeyboard(el, 16, false);
+      } catch {
+        /* noop */
+      }
     };
+    requestAnimationFrame(() => {
+      if (Platform.OS === "android") setTimeout(run, 70);
+      else run();
+    });
   }, []);
   /** Props vivas para DrillBalance (componente estable vía useMemo; evita remount del ScrollView horizontal del time frame). */
   const balanceDrillPropsRef = useRef(null);
@@ -297,21 +404,51 @@ export function FinanceScreen() {
   const [filterSec, setFilterSec] = useState("all");
   const [search, setSearch] = useState("");
   const [reportView, setReportView] = useState("balance");
+  /** Reportes → Secciones: null = lista; string = sección elegida. */
+  const [reportSectionSel, setReportSectionSel] = useState(null);
+  /** Filtro opcional en reportes Top / Lista (todas las transacciones por sección). */
+  const [reportFilterSection, setReportFilterSection] = useState(null);
+  /** Periodo global para Balance, Secciones, Top y Lista. */
+  const [reportTimeRange, setReportTimeRange] = useState("month");
   const [calMonth, setCalMonth] = useState(() => new Date());
   const [calSel, setCalSel] = useState(null);
+
+  const calMonthTitle = useMemo(
+    () =>
+      new Date(
+        calMonth.getFullYear(),
+        calMonth.getMonth(),
+        1,
+      ).toLocaleDateString(localeTag, { month: "long", year: "numeric" }),
+    [calMonth, localeTag],
+  );
+
+  const calWeekdayLabels = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, i) =>
+        new Date(2024, 0, 1 + i).toLocaleDateString(localeTag, {
+          weekday: "narrow",
+        }),
+      ),
+    [localeTag],
+  );
 
   /* AI */
   const [aiOpen, setAiOpen] = useState(false);
   const [aiMsgs, setAiMsgs] = useState([
-    {
-      role: "assistant",
-      text: "¿En qué te puedo ayudar? Puedes escribir o adjuntar una imagen de un ticket.",
-    },
+    { role: "assistant", text: AI_WELCOME_PLACEHOLDER },
   ]);
   const [aiInput, setAiInput] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiImage, setAiImage] = useState(null);
   const aiRef = useRef(null);
+
+  useEffect(() => {
+    if (tab !== "reports") {
+      setReportSectionSel(null);
+      setReportFilterSection(null);
+    }
+  }, [tab]);
 
   /** Android: atrás físico sigue la misma pila que los botones ‹ y modales. */
   useEffect(() => {
@@ -355,6 +492,14 @@ export function FinanceScreen() {
       }
       if (settingsOpen) {
         closeSettingsDrawer();
+        return true;
+      }
+      if (
+        tab === "reports" &&
+        reportView === "sections" &&
+        reportSectionSel
+      ) {
+        setReportSectionSel(null);
         return true;
       }
       if (!drilldown) return false;
@@ -414,6 +559,9 @@ export function FinanceScreen() {
     txModal,
     aiOpen,
     settingsOpen,
+    tab,
+    reportView,
+    reportSectionSel,
     drilldown,
     drillSub,
     accountsDetail,
@@ -495,6 +643,71 @@ export function FinanceScreen() {
     [sections],
   );
 
+  const reportTxs = useMemo(
+    () => filterTxsByReportRange(txs, reportTimeRange),
+    [txs, reportTimeRange],
+  );
+
+  const reportTInc = useMemo(
+    () =>
+      reportTxs
+        .filter((x) => x.type === "income")
+        .reduce((s, x) => s + x.amount, 0),
+    [reportTxs],
+  );
+  const reportTExp = useMemo(
+    () =>
+      reportTxs
+        .filter((x) => x.type === "expense")
+        .reduce((s, x) => s + x.amount, 0),
+    [reportTxs],
+  );
+  const reportBal = useMemo(
+    () => reportTInc - reportTExp,
+    [reportTInc, reportTExp],
+  );
+  const reportSavRate = useMemo(
+    () => (reportTInc > 0 ? Math.round((reportBal / reportTInc) * 100) : 0),
+    [reportTInc, reportBal],
+  );
+
+  const reportByAccount = useMemo(() => {
+    const accountBalMap = {};
+    accounts.forEach((a) => {
+      accountBalMap[a] = 0;
+    });
+    reportTxs.forEach((tx) => applyTxToAccounts(accountBalMap, tx));
+    return accounts.map((a) => ({ a, bal: accountBalMap[a] || 0 }));
+  }, [reportTxs, accounts]);
+
+  /** Transacciones del informe por sección (todas, no solo recurrentes). */
+  const reportSectionTxs = useMemo(() => {
+    if (!reportSectionSel) return [];
+    const target = normSec(reportSectionSel).toLowerCase();
+    return reportTxs.filter(
+      (tx) => normSec(tx.section).toLowerCase() === target,
+    );
+  }, [reportTxs, reportSectionSel]);
+
+  const reportSectionTotals = useMemo(() => {
+    const exp = reportSectionTxs
+      .filter((x) => x.type === "expense")
+      .reduce((s, x) => s + x.amount, 0);
+    const inc = reportSectionTxs
+      .filter((x) => x.type === "income")
+      .reduce((s, x) => s + x.amount, 0);
+    return { exp, inc };
+  }, [reportSectionTxs]);
+
+  /** Top / Lista: periodo + opcionalmente filtrar por sección. */
+  const txsForReportFilter = useMemo(() => {
+    if (!reportFilterSection) return reportTxs;
+    const target = normSec(reportFilterSection).toLowerCase();
+    return reportTxs.filter(
+      (tx) => normSec(tx.section).toLowerCase() === target,
+    );
+  }, [reportTxs, reportFilterSection]);
+
   /* ── Computed ── */
   const tInc = txs
     .filter((t) => t.type === "income")
@@ -552,16 +765,19 @@ export function FinanceScreen() {
   }, [txs, accounts, sections, budget, alertRules, dismissedAlerts]);
 
   /* ── Balance report helpers ── */
-  const tfLabel = {
-    day: "Hoy",
-    week: "Esta semana",
-    month: "Este mes",
-    quarter: "Trimestre",
-    semester: "Semestre",
-    year: "Este año",
-    all: "Vitalicio",
-    custom: "Personalizado",
-  };
+  const tfLabel = useMemo(
+    () => ({
+      day: t("timeRange.day"),
+      week: t("timeRange.week"),
+      month: t("timeRange.month"),
+      quarter: t("timeRange.quarter"),
+      semester: t("timeRange.semester"),
+      year: t("timeRange.year"),
+      all: t("timeRange.all"),
+      custom: t("timeRange.custom"),
+    }),
+    [t, i18n.language],
+  );
   const txsForTf = (tf, custom) => {
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -621,32 +837,104 @@ export function FinanceScreen() {
   const chartMonthData = useMemo(() => {
     return rollingChartMonthBuckets(4).map(({ key: mk, label }) => {
       const inc = txs
-        .filter((t) => t.type === "income" && t.date.startsWith(mk))
-        .reduce((s, t) => s + t.amount, 0);
+        .filter((t) => {
+          if (t.type !== "income") return false;
+          const ymk = yearMonthKeyFromTxDate(t.date);
+          return ymk === mk;
+        })
+        .reduce((s, t) => s + Number(t.amount) || 0, 0);
       const exp = txs
-        .filter((t) => t.type === "expense" && t.date.startsWith(mk))
-        .reduce((s, t) => s + t.amount, 0);
+        .filter((t) => {
+          if (t.type !== "expense") return false;
+          const ymk = yearMonthKeyFromTxDate(t.date);
+          return ymk === mk;
+        })
+        .reduce((s, t) => s + Number(t.amount) || 0, 0);
       const asOf = chartMonthEndDate(mk);
       const sav = totalGoalSavedAsOfDate(goals, txs, asOf);
       return { label, inc, exp, sav };
     });
   }, [txs, goals]);
-  const pieData = [
-    balFilters.inc && balInc > 0
-      ? { label: "Ingresos", value: balInc, color: C.green }
-      : null,
-    balFilters.exp && balExp > 0
-      ? { label: "Egresos", value: balExp, color: C.red }
-      : null,
-    balFilters.sav && balMetasTotal > 0
-      ? {
-          label: "Total en metas (al cierre)",
-          value: balMetasTotal,
-          color: C.gold,
-          legendAmount: balMetasTotal,
-        }
-      : null,
-  ].filter(Boolean);
+  const pieData = useMemo(
+    () =>
+      [
+        balFilters.inc && balInc > 0
+          ? { label: t("balance.income"), value: balInc, color: C.green }
+          : null,
+        balFilters.exp && balExp > 0
+          ? { label: t("balance.expense"), value: balExp, color: C.red }
+          : null,
+        balFilters.sav && balMetasTotal > 0
+          ? {
+              label: t("balance.totalGoals"),
+              value: balMetasTotal,
+              color: C.gold,
+              legendAmount: balMetasTotal,
+            }
+          : null,
+      ].filter(Boolean),
+    [
+      balFilters.inc,
+      balFilters.exp,
+      balFilters.sav,
+      balInc,
+      balExp,
+      balMetasTotal,
+      C.green,
+      C.red,
+      C.gold,
+      t,
+      i18n.language,
+    ],
+  );
+
+  /** Mini barras inicio: mismos datos reales que el drill (últimos 4 meses por transacciones). */
+  const trendData = useMemo(
+    () =>
+      chartMonthData.map((d) => ({
+        inc: d.inc,
+        exp: d.exp,
+        label: d.label,
+      })),
+    [chartMonthData],
+  );
+  const maxTrend = Math.max(...trendData.map((m) => Math.max(m.inc, m.exp)), 1);
+  const trendHasAnyData = trendData.some((m) => m.inc > 0 || m.exp > 0);
+  const TABS = useMemo(
+    () => [
+      {
+        id: "dashboard",
+        iconOff: "home-outline",
+        iconOn: "home",
+        label: t("tabs.home"),
+      },
+      {
+        id: "transactions",
+        iconOff: "wallet-outline",
+        iconOn: "wallet",
+        label: t("tabs.trans"),
+      },
+      {
+        id: "goals",
+        iconOff: "trophy-outline",
+        iconOn: "trophy",
+        label: t("tabs.goals"),
+      },
+      {
+        id: "reports",
+        iconOff: "pie-chart-outline",
+        iconOn: "pie-chart",
+        label: t("tabs.reports"),
+      },
+      {
+        id: "calendar",
+        iconOff: "calendar-outline",
+        iconOn: "calendar",
+        label: t("tabs.calendar"),
+      },
+    ],
+    [t, i18n.language],
+  );
 
   /* ── TX actions ── */
   const revertTxGoalEffects = (t) => {
@@ -704,7 +992,7 @@ export function FinanceScreen() {
     const amt = parseMoneyDigits(form.amountDigits);
     if (Number.isNaN(amt) || amt <= 0) return;
     if (form.type === "transfer") {
-      const d = (form.desc || "").trim() || "Transferencia";
+      const d = (form.desc || "").trim() || t("tx.transferDefault");
       if (form.transferLeg === "to_account") {
         if (!form.transferToAccount || form.transferToAccount === form.account)
           return;
@@ -866,8 +1154,8 @@ export function FinanceScreen() {
   };
   const archiveAcc = (acc) => {
     setConfirmDialog({
-      msg: "Archivar esta cuenta? Los movimientos se conservan.",
-      confirmLabel: "Archivar",
+      msg: t("accounts.archiveMsg"),
+      confirmLabel: t("accounts.archive"),
       onConfirm: () => {
         setAccounts((p) => p.filter((a) => a !== acc));
         setArchivedAccounts((p) => [...p, acc]);
@@ -879,8 +1167,8 @@ export function FinanceScreen() {
   };
   const deleteAcc = (acc) => {
     setConfirmDialog({
-      msg: "Eliminar cuenta del listado activo? Si tiene movimientos, permaneceran asociados al nombre.",
-      confirmLabel: "Eliminar",
+      msg: t("accounts.deleteListMsg"),
+      confirmLabel: t("confirm.delete"),
       onConfirm: () => {
         setAccounts((p) => p.filter((a) => a !== acc));
         if (defaultAccount === acc)
@@ -910,7 +1198,8 @@ export function FinanceScreen() {
   };
   const deleteRec = (id) =>
     setConfirmDialog({
-      msg: "Eliminar este gasto recurrente?",
+      msg: t("recurring.deleteMsg"),
+      confirmLabel: t("confirm.delete"),
       onConfirm: () => {
         setTxs((p) => p.filter((t) => t.id !== id));
       },
@@ -948,7 +1237,8 @@ export function FinanceScreen() {
   };
   const removeGoalConfirmed = (id) =>
     setConfirmDialog({
-      msg: "Eliminar esta meta? El dinero ahorrado dejara de mostrarse aqui (las transacciones en el listado se conservan).",
+      msg: t("goals.deleteConfirmMsg"),
+      confirmLabel: t("confirm.delete"),
       onConfirm: () => setGoals((p) => p.filter((x) => x.id !== id)),
     });
   const applyGoalDeposit = (g) => {
@@ -962,7 +1252,7 @@ export function FinanceScreen() {
         id: tid,
         type: "transfer",
         amount: v,
-        desc: "Ahorro: " + g.name,
+        desc: t("goals.transferDesc", { name: g.name }),
         section: "Transferencias",
         account: acc,
         transferToAccount: null,
@@ -990,7 +1280,7 @@ export function FinanceScreen() {
         id: Date.now(),
         type: "transfer",
         amount: amt,
-        desc: "Retiro: " + g.name,
+        desc: t("goals.withdrawDesc", { name: g.name }),
         section: "Transferencias",
         account: goalWithdrawForm.account,
         transferToAccount: null,
@@ -1050,23 +1340,17 @@ export function FinanceScreen() {
     setAiInput("");
     setAiMsgs((p) => [
       ...p,
-      { role: "user", text: msg + (aiImage ? "  [imagen adjunta]" : "") },
+      { role: "user", text: msg + (aiImage ? t("ai.imageAttachedSuffix") : "") },
     ]);
     setAiLoading(true);
-    const sys =
-      "Eres un asistente financiero. Balance: " +
-      fmt(bal) +
-      " | Ingresos: " +
-      fmt(tInc) +
-      " | Egresos: " +
-      fmt(tExp) +
-      "\nSecciones: " +
-      sections.join(", ") +
-      "\nCuentas: " +
-      accounts.join(", ") +
-      "\nHoy: " +
-      todayStr() +
-      '\n\nSi el usuario quiere REGISTRAR responde con JSON:\n{"action":"add_tx","type":"income|expense","amount":0,"desc":"...","section":"...","account":"...","date":"YYYY-MM-DD","notes":""}\nResponde en espanol, breve.';
+    const sys = t("ai.systemPrompt", {
+      balance: fmt(bal),
+      income: fmt(tInc),
+      expense: fmt(tExp),
+      sections: sections.join(", "),
+      accounts: accounts.join(", "),
+      today: todayStr(),
+    });
     try {
       const uc = aiImage
         ? [
@@ -1080,7 +1364,7 @@ export function FinanceScreen() {
             },
             {
               type: "text",
-              text: msg || "Analiza este ticket y registra el gasto",
+              text: msg || t("ai.analyzeTicket"),
             },
           ]
         : msg;
@@ -1097,7 +1381,7 @@ export function FinanceScreen() {
       const data = await res.json();
       const raw =
         (data.content && data.content[0] && data.content[0].text) ||
-        "No pude procesar.";
+        t("ai.processFail");
       const jm = raw.match(/\{[\s\S]*?"action"\s*:\s*"add_tx"[\s\S]*?\}/);
       if (jm) {
         try {
@@ -1121,7 +1405,7 @@ export function FinanceScreen() {
             .trim();
           setAiMsgs((p) => [
             ...p,
-            { role: "assistant", text: clean || "Registrado.", highlight: nT },
+            { role: "assistant", text: clean || t("ai.registered"), highlight: nT },
           ]);
         } catch (e) {
           setAiMsgs((p) => [...p, { role: "assistant", text: raw }]);
@@ -1130,7 +1414,7 @@ export function FinanceScreen() {
     } catch (e) {
       setAiMsgs((p) => [
         ...p,
-        { role: "assistant", text: "Error conectando." },
+        { role: "assistant", text: t("ai.errorConnect") },
       ]);
     }
     setAiImage(null);
@@ -1150,25 +1434,12 @@ export function FinanceScreen() {
     }
   };
 
-  const trendData = [
-    { inc: 20000, exp: 15600, label: "Feb" },
-    { inc: 21000, exp: 14350, label: "Mar" },
-    { inc: tInc, exp: tExp, label: "Abr" },
-  ];
-  const maxTrend = Math.max(...trendData.map((m) => Math.max(m.inc, m.exp)), 1);
-  const TABS = [
-    { id: "dashboard", sym: "⊞", label: "Inicio" },
-    { id: "transactions", sym: "↕", label: "Gastos" },
-    { id: "goals", sym: "◎", label: "Metas" },
-    { id: "reports", sym: "∷", label: "Reportes" },
-    { id: "calendar", sym: "▦", label: "Calendario" },
-  ];
-
   /* ─────────── DRILLDOWN PANELS ─────────── */
 
   /* BALANCE REPORT — tipo de componente estable (useMemo) para no reiniciar scroll horizontal al cambiar balTf */
   const DrillBalance = useMemo(() => {
     function DrillBalanceInner() {
+      const { t } = useTranslation();
       const p = balanceDrillPropsRef.current;
       if (!p) return null;
       const {
@@ -1197,7 +1468,7 @@ export function FinanceScreen() {
         goals,
       } = p;
       return (
-        <DrillScreen title="Reporte de balance" onBack={closeDrill}>
+        <DrillScreen title={t("drill.balance")} onBack={closeDrill}>
       <GHScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -1232,22 +1503,28 @@ export function FinanceScreen() {
         >
           <View style={{ flex: 1, minWidth: 120 }}>
             <Text style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-              Desde
+              {t("balance.from")}
             </Text>
-            <TextInput
-              value={balCustom.from}
-              onChangeText={(v) => setBalCustom((p) => ({ ...p, from: v }))}
-              style={iS}
+            <TxDateField
+              readOnly={false}
+              dateStr={String(balCustom.from || "")}
+              onChangeYmd={(ymd) =>
+                setBalCustom((p) => ({ ...p, from: ymd }))
+              }
+              C={C}
+              iS={iS}
             />
           </View>
           <View style={{ flex: 1, minWidth: 120 }}>
             <Text style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-              Hasta
+              {t("balance.to")}
             </Text>
-            <TextInput
-              value={balCustom.to}
-              onChangeText={(v) => setBalCustom((p) => ({ ...p, to: v }))}
-              style={iS}
+            <TxDateField
+              readOnly={false}
+              dateStr={String(balCustom.to || "")}
+              onChangeYmd={(ymd) => setBalCustom((p) => ({ ...p, to: ymd }))}
+              C={C}
+              iS={iS}
             />
           </View>
         </View>
@@ -1263,7 +1540,7 @@ export function FinanceScreen() {
               marginBottom: 4,
             }}
           >
-            Ingresos
+            {t("balance.income")}
           </Text>
           <Text style={{ fontSize: 16, fontWeight: 500, color: C.green }}>
             {fmt(balInc)}
@@ -1279,7 +1556,7 @@ export function FinanceScreen() {
               marginBottom: 4,
             }}
           >
-            Egresos
+            {t("balance.expense")}
           </Text>
           <Text style={{ fontSize: 16, fontWeight: 500, color: C.red }}>
             {fmt(balExp)}
@@ -1295,7 +1572,7 @@ export function FinanceScreen() {
               marginBottom: 4,
             }}
           >
-            En metas
+            {t("balance.inGoals")}
           </Text>
           <Text
             style={{
@@ -1318,9 +1595,9 @@ export function FinanceScreen() {
         }}
       >
         {[
-          ["pie", "Pastel"],
-          ["bar", "Barras"],
-          ["line", "Lineas"],
+          ["pie", t("chart.pie")],
+          ["bar", t("chart.bar")],
+          ["line", t("chart.line")],
         ].map(([k, l]) => (
           <Pressable
             key={k}
@@ -1359,9 +1636,9 @@ export function FinanceScreen() {
         }}
       >
         {[
-          ["inc", "Ingresos", C.green],
-          ["exp", "Egresos", C.red],
-          ["sav", "En metas", C.gold],
+          ["inc", t("balance.income"), C.green],
+          ["exp", t("balance.expense"), C.red],
+          ["sav", t("balance.inGoals"), C.gold],
         ].map(([k, l, col]) => (
           <Pressable
             key={k}
@@ -1464,21 +1741,21 @@ export function FinanceScreen() {
               series={[
                 balFilters.inc
                   ? {
-                      label: "Ingresos",
+                      label: t("balance.income"),
                       color: C.green,
                       data: chartMonthData.map((d) => d.inc),
                     }
                   : null,
                 balFilters.exp
                   ? {
-                      label: "Egresos",
+                      label: t("balance.expense"),
                       color: C.red,
                       data: chartMonthData.map((d) => d.exp),
                     }
                   : null,
                 balFilters.sav
                   ? {
-                      label: "En metas",
+                      label: t("balance.inGoals"),
                       color: C.gold,
                       data: chartMonthData.map((d) => d.sav),
                     }
@@ -1495,9 +1772,9 @@ export function FinanceScreen() {
               }}
             >
               {[
-                ["inc", "Ingresos", C.green],
-                ["exp", "Egresos", C.red],
-                ["sav", "En metas", C.gold],
+                ["inc", t("balance.income"), C.green],
+                ["exp", t("balance.expense"), C.red],
+                ["sav", t("balance.inGoals"), C.gold],
               ]
                 .filter(([k]) => balFilters[k])
                 .map(([k, l, col]) => (
@@ -1533,12 +1810,12 @@ export function FinanceScreen() {
             color: C.text,
           }}
         >
-          Transacciones del periodo
+          {t("balance.periodTx")}
         </Text>
         <TxList
           txs={[...balTxs].sort((a, b) => b.date.localeCompare(a.date))}
           goals={goals}
-          emptyMsg="Sin transacciones en este periodo"
+          emptyMsg={t("txList.emptyPeriod")}
         />
       </View>
     </DrillScreen>
@@ -1549,6 +1826,7 @@ export function FinanceScreen() {
 
   /* ACCOUNTS */
   const DrillAccounts = () => {
+    const { t } = useTranslation();
     if (accountsDetail) {
       const accTxs = [...txs]
         .filter((t) => {
@@ -1586,7 +1864,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Ingresos
+                {t("balance.income")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.green }}>
                 {fmt(aInc)}
@@ -1602,7 +1880,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Egresos
+                {t("balance.expense")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.red }}>{fmt(aExp)}</Text>
             </View>
@@ -1616,7 +1894,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Balance
+                {t("accounts.balance")}
               </Text>
               <Text
                 style={{ fontWeight: 500, color: aBal >= 0 ? C.green : C.red }}
@@ -1634,7 +1912,7 @@ export function FinanceScreen() {
                 color: C.text,
               }}
             >
-              Movimientos
+              {t("common.movements")}
             </Text>
             <TxList txs={accTxs} goals={goals} />
           </View>
@@ -1643,7 +1921,7 @@ export function FinanceScreen() {
     }
     return (
       <DrillScreen
-        title="Cuentas"
+        title={t("accounts.titleScreen")}
         onBack={() => {
           if (accountsEditMode) {
             setAccountsEditMode(false);
@@ -1669,7 +1947,7 @@ export function FinanceScreen() {
                 color: accountsEditMode ? C.blue : C.muted,
               }}
             >
-              {accountsEditMode ? "Listo" : "Editar"}
+              {accountsEditMode ? t("common.done") : t("common.edit")}
             </Text>
           </Pressable>
         }
@@ -1694,7 +1972,7 @@ export function FinanceScreen() {
               <Text
                 style={{ fontSize: 13, color: C.green, textAlign: "center" }}
               >
-                + Agregar cuenta
+                {t("accounts.addCta")}
               </Text>
             </Pressable>
           )}
@@ -1744,7 +2022,7 @@ export function FinanceScreen() {
                           borderColor: C.greenBorder,
                         }}
                       >
-                        Default
+                        {t("accounts.defaultBadge")}
                       </Text>
                     )}
                   </View>
@@ -1800,7 +2078,7 @@ export function FinanceScreen() {
                             textAlign: "center",
                           }}
                         >
-                          Default
+                          {t("accounts.defaultBadge")}
                         </Text>
                       </Pressable>
                     )}
@@ -1826,7 +2104,7 @@ export function FinanceScreen() {
                           textAlign: "center",
                         }}
                       >
-                        Editar
+                        {t("common.edit")}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -1848,7 +2126,7 @@ export function FinanceScreen() {
                           textAlign: "center",
                         }}
                       >
-                        Archivar
+                        {t("accounts.archive")}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -1870,7 +2148,7 @@ export function FinanceScreen() {
                           textAlign: "center",
                         }}
                       >
-                        Eliminar
+                        {t("confirm.delete")}
                       </Text>
                     </Pressable>
                   </View>
@@ -1889,7 +2167,7 @@ export function FinanceScreen() {
                   marginBottom: 8,
                 }}
               >
-                Archivadas
+                {t("accounts.archived")}
               </Text>
               {archivedAccounts.map((a) => (
                 <View
@@ -1917,7 +2195,7 @@ export function FinanceScreen() {
                     }}
                   >
                     <Text style={{ fontSize: 12, color: C.muted }}>
-                      Restaurar
+                      {t("accounts.restore")}
                     </Text>
                   </Pressable>
                 </View>
@@ -1931,21 +2209,32 @@ export function FinanceScreen() {
 
   /* TREND */
   const DrillTrend = () => {
-    const months = [
-      { key: "2025-02", label: "Febrero 2025" },
-      { key: "2025-03", label: "Marzo 2025" },
-      { key: "2025-04", label: "Abril 2025" },
-    ];
+    const { t } = useTranslation();
+    /** Hasta 12 meses; primero el mes en curso, luego hacia el pasado. */
+    const months = useMemo(() => {
+      return rollingChartMonthBucketsNewestFirst(12).map(({ key }) => {
+        const parts = key.split("-");
+        const y = Number(parts[0]);
+        const mo = Number(parts[1]);
+        const label = new Date(y, mo - 1, 1).toLocaleDateString(localeTag, {
+          month: "long",
+          year: "numeric",
+        });
+        return { key, label };
+      });
+    }, [localeTag]);
     if (drillSub) {
       const mTxs = [...txs]
-        .filter((t) => t.date.startsWith(drillSub.key))
+        .filter(
+          (t) => yearMonthKeyFromTxDate(t.date) === drillSub.key,
+        )
         .sort((a, b) => b.date.localeCompare(a.date));
       const mI = mTxs
         .filter((t) => t.type === "income")
-        .reduce((s, t) => s + t.amount, 0);
+        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
       const mE = mTxs
         .filter((t) => t.type === "expense")
-        .reduce((s, t) => s + t.amount, 0);
+        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
       return (
         <DrillScreen title={drillSub.label} onBack={() => setDrillSub(null)}>
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
@@ -1959,7 +2248,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Ingresos
+                {t("balance.income")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.green }}>{fmt(mI)}</Text>
             </View>
@@ -1973,7 +2262,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Egresos
+                {t("balance.expense")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.red }}>{fmt(mE)}</Text>
             </View>
@@ -1987,7 +2276,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Balance
+                {t("accounts.balance")}
               </Text>
               <Text
                 style={{
@@ -2008,7 +2297,7 @@ export function FinanceScreen() {
                 color: C.text,
               }}
             >
-              Transacciones
+              {t("common.movements")}
             </Text>
             <TxList txs={mTxs} goals={goals} />
           </View>
@@ -2016,14 +2305,22 @@ export function FinanceScreen() {
       );
     }
     return (
-      <DrillScreen title="Tendencia mensual" onBack={closeDrill}>
+      <DrillScreen title={t("drill.trend")} onBack={closeDrill}>
         {months.map((m) => {
           const mI = txs
-            .filter((t) => t.date.startsWith(m.key) && t.type === "income")
-            .reduce((s, t) => s + t.amount, 0);
+            .filter(
+              (t) =>
+                t.type === "income" &&
+                yearMonthKeyFromTxDate(t.date) === m.key,
+            )
+            .reduce((s, t) => s + (Number(t.amount) || 0), 0);
           const mE = txs
-            .filter((t) => t.date.startsWith(m.key) && t.type === "expense")
-            .reduce((s, t) => s + t.amount, 0);
+            .filter(
+              (t) =>
+                t.type === "expense" &&
+                yearMonthKeyFromTxDate(t.date) === m.key,
+            )
+            .reduce((s, t) => s + (Number(t.amount) || 0), 0);
           const mB = mI - mE;
           return (
             <Pressable
@@ -2075,7 +2372,9 @@ export function FinanceScreen() {
                     paddingHorizontal: 10,
                   }}
                 >
-                  <Text style={{ fontSize: 10, color: C.muted }}>Ingresos</Text>
+                  <Text style={{ fontSize: 10, color: C.muted }}>
+                    {t("balance.income")}
+                  </Text>
                   <Text
                     style={{ fontSize: 13, color: C.green, fontWeight: 500 }}
                   >
@@ -2092,7 +2391,9 @@ export function FinanceScreen() {
                     paddingHorizontal: 10,
                   }}
                 >
-                  <Text style={{ fontSize: 10, color: C.muted }}>Egresos</Text>
+                  <Text style={{ fontSize: 10, color: C.muted }}>
+                    {t("balance.expense")}
+                  </Text>
                   <Text style={{ fontSize: 13, color: C.red, fontWeight: 500 }}>
                     {fmt(mE)}
                   </Text>
@@ -2106,7 +2407,7 @@ export function FinanceScreen() {
                   color: C.hint,
                 }}
               >
-                Toca para ver detalle ›
+                {t("drill.tapForDetail")}
               </Text>
             </Pressable>
           );
@@ -2117,12 +2418,20 @@ export function FinanceScreen() {
 
   /* BUDGET */
   const DrillBudget = () => {
-    const budgetMonthOpts = [
-      { key: null, label: "Todos" },
-      { key: "2025-02", label: "Feb 25" },
-      { key: "2025-03", label: "Mar 25" },
-      { key: "2025-04", label: "Abr 25" },
-    ];
+    const { t } = useTranslation();
+    const budgetMonthOpts = useMemo(() => {
+      const rows = rollingChartMonthBucketsNewestFirst(12).map(({ key }) => {
+        const parts = key.split("-");
+        const y = Number(parts[0]);
+        const mo = Number(parts[1]);
+        const label = new Date(y, mo - 1, 1).toLocaleDateString(localeTag, {
+          month: "short",
+          year: "2-digit",
+        });
+        return { key, label };
+      });
+      return [{ key: null, label: t("budget.monthAll") }, ...rows];
+    }, [localeTag, t]);
     const addBudgetSection = () => {
       const n = (budgetNewSecName || "").trim();
       if (!n || sections.includes(n)) return;
@@ -2133,11 +2442,8 @@ export function FinanceScreen() {
     const archiveBudgetSection = (s) => {
       if (s === "Transferencias" || s === "Otros") return;
       setConfirmDialog({
-        msg:
-          'Archivar seccion "' +
-          s +
-          '"? Dejara de aparecer en presupuesto activo.',
-        confirmLabel: "Archivar",
+        msg: t("budget.archiveSectionMsg", { name: s }),
+        confirmLabel: t("accounts.archive"),
         onConfirm: () => {
           setSections((p) => p.filter((x) => x !== s));
           setArchivedSections((p) => [...p, s]);
@@ -2152,11 +2458,11 @@ export function FinanceScreen() {
     const deleteBudgetSection = (s) => {
       if (s === "Transferencias" || sections.length < 2) return;
       setConfirmDialog({
-        msg:
-          'Eliminar "' +
-          s +
-          '"? Las transacciones de esta seccion pasaran a Otros.',
-        confirmLabel: "Eliminar",
+        msg: t("budget.deleteSectionMsg", {
+          name: s,
+          target: t("sections.otherFallback"),
+        }),
+        confirmLabel: t("confirm.delete"),
         onConfirm: () => {
           setTxs((p) =>
             p.map((t) => (t.section === s ? { ...t, section: "Otros" } : t)),
@@ -2194,10 +2500,14 @@ export function FinanceScreen() {
           (t) =>
             t.type === "expense" &&
             t.section === drillSub &&
-            (!budgetDetailMonth || t.date.startsWith(budgetDetailMonth)),
+            (!budgetDetailMonth ||
+              yearMonthKeyFromTxDate(t.date) === budgetDetailMonth),
         )
         .sort((a, b) => b.date.localeCompare(a.date));
-      const total = secTxs.reduce((s, t) => s + t.amount, 0);
+      const total = secTxs.reduce(
+        (s, t) => s + (Number(t.amount) || 0),
+        0,
+      );
       const bgt = budget[drillSub] || 0;
       return (
         <DrillScreen
@@ -2252,7 +2562,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Gastado
+                {t("budget.spent")}
               </Text>
               <Text
                 style={{
@@ -2273,7 +2583,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Presupuesto
+                {t("budget.budgetLabel")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.text }}>{fmt(bgt)}</Text>
             </View>
@@ -2287,7 +2597,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                {total > bgt ? "Excedido" : "Disponible"}
+                {total > bgt ? t("budget.exceeded") : t("budget.available")}
               </Text>
               <Text
                 style={{
@@ -2308,12 +2618,12 @@ export function FinanceScreen() {
                 color: C.text,
               }}
             >
-              Transacciones
+              {t("budget.transactionsHeading")}
             </Text>
             <TxList
               txs={secTxs}
               goals={goals}
-              emptyMsg="Sin gastos en esta categoria"
+              emptyMsg={t("budget.emptyCategory")}
             />
           </View>
         </DrillScreen>
@@ -2321,7 +2631,7 @@ export function FinanceScreen() {
     }
     return (
       <DrillScreen
-        title="Presupuesto vs. real"
+        title={t("budget.vsActual")}
         onBack={() => {
           if (budgetRenSec) {
             setBudgetRenSec(null);
@@ -2351,7 +2661,7 @@ export function FinanceScreen() {
                 color: budgetManageSections ? C.blue : C.muted,
               }}
             >
-              {budgetManageSections ? "Listo" : "Editar secciones"}
+              {budgetManageSections ? t("budget.done") : t("budget.editSections")}
             </Text>
           </Pressable>
         }
@@ -2361,7 +2671,7 @@ export function FinanceScreen() {
             {budgetRenSec && (
               <View style={{ ...cS, marginBottom: 12 }}>
                 <Text style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
-                  Renombrar "{budgetRenSec}"
+                  {t("budget.renameSectionTitle", { name: budgetRenSec })}
                 </Text>
                 <TextInput
                   value={budgetRenSecText}
@@ -2387,7 +2697,7 @@ export function FinanceScreen() {
                         fontSize: 13,
                       }}
                     >
-                      Guardar
+                      {t("common.save")}
                     </Text>
                   </Pressable>
                   <Pressable
@@ -2408,7 +2718,7 @@ export function FinanceScreen() {
                         fontSize: 13,
                       }}
                     >
-                      Cancelar
+                      {t("common.cancel")}
                     </Text>
                   </Pressable>
                 </View>
@@ -2467,7 +2777,7 @@ export function FinanceScreen() {
                       }}
                     >
                       <Text style={{ fontSize: 12, color: C.muted }}>
-                        Renombrar
+                        {t("budget.rename")}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -2482,7 +2792,7 @@ export function FinanceScreen() {
                       }}
                     >
                       <Text style={{ fontSize: 12, color: C.gold }}>
-                        Archivar
+                        {t("accounts.archive")}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -2497,7 +2807,7 @@ export function FinanceScreen() {
                       }}
                     >
                       <Text style={{ fontSize: 12, color: C.red }}>
-                        Eliminar
+                        {t("confirm.delete")}
                       </Text>
                     </Pressable>
                   </View>
@@ -2506,7 +2816,7 @@ export function FinanceScreen() {
             {archivedSections.length > 0 && (
               <View style={{ marginTop: 12 }}>
                 <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-                  Archivadas
+                  {t("accounts.archived")}
                 </Text>
                 {archivedSections.map((s) => (
                   <View
@@ -2539,7 +2849,7 @@ export function FinanceScreen() {
                       }}
                     >
                       <Text style={{ fontSize: 12, color: C.green }}>
-                        Restaurar
+                        {t("accounts.restore")}
                       </Text>
                     </Pressable>
                   </View>
@@ -2615,14 +2925,18 @@ export function FinanceScreen() {
                     }}
                   >
                     <Text style={{ fontSize: 11, color: C.muted }}>
-                      {Math.round(pct)}% utilizado
+                      {t("budget.usedPct", { pct: Math.round(pct) })}
                     </Text>
                     <Text
                       style={{ fontSize: 11, color: over ? C.red : C.green }}
                     >
                       {over
-                        ? "Excedido: " + fmt(b.spent - b.b)
-                        : "Disponible: " + fmt(b.b - b.spent)}
+                        ? t("budget.exceededWith", {
+                            amount: fmt(b.spent - b.b),
+                          })
+                        : t("budget.availableWith", {
+                            amount: fmt(b.b - b.spent),
+                          })}
                     </Text>
                   </View>
                 </Pressable>
@@ -2634,6 +2948,7 @@ export function FinanceScreen() {
 
   /* GOALS */
   const DrillGoals = () => {
+    const { t } = useTranslation();
     if (drillSub) {
       const g = goals.find((x) => x.id === drillSub);
       if (!g) return null;
@@ -2680,7 +2995,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Ahorrado
+                {t("goals.savedLabel")}
               </Text>
               <Text style={{ fontWeight: 500, color: g.color }}>
                 {fmt(g.saved)}
@@ -2696,7 +3011,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Objetivo
+                {t("goals.targetLabel")}
               </Text>
               <Text style={{ fontWeight: 500, color: C.text }}>
                 {fmt(g.target)}
@@ -2712,7 +3027,7 @@ export function FinanceScreen() {
                   marginBottom: 4,
                 }}
               >
-                Avance
+                {t("goals.advanceLabel")}
               </Text>
               <Text style={{ fontWeight: 500, color: g.color }}>{pctNum}%</Text>
             </View>
@@ -2729,7 +3044,7 @@ export function FinanceScreen() {
               }}
             >
               <Text style={{ fontSize: 13, color: C.green, fontWeight: 500 }}>
-                Superavit: +{fmt(surplus)} sobre la meta
+                {t("goals.surplusLine", { amount: fmt(surplus) })}
               </Text>
             </View>
           )}
@@ -2742,15 +3057,15 @@ export function FinanceScreen() {
                 color: C.text,
               }}
             >
-              Movimientos vinculados
+              {t("goals.linkedMovements")}
             </Text>
             <Text style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>
-              Transferencias a/desde la meta y coincidencias por nota o seccion
+              {t("goals.linkedSub")}
             </Text>
             <TxList
               txs={gTxs}
               goals={goals}
-              emptyMsg="No hay movimientos vinculados"
+              emptyMsg={t("goals.emptyLinked")}
             />
           </View>
         </DrillScreen>
@@ -2758,7 +3073,7 @@ export function FinanceScreen() {
     }
     return (
       <DrillScreen
-        title="Metas de ahorro"
+        title={t("goals.screenTitle")}
         onBack={closeDrill}
         action={
           <Pressable
@@ -2776,7 +3091,7 @@ export function FinanceScreen() {
             }}
           >
             <Text style={{ fontSize: 12, color: C.purple, fontWeight: 500 }}>
-              Ir a Metas
+              {t("tabs.goals")}
             </Text>
           </Pressable>
         }
@@ -2812,7 +3127,7 @@ export function FinanceScreen() {
                     {g.name}
                   </Text>
                   <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                    {daysLeft} dias restantes
+                    {t("goals.daysLeftLine", { count: daysLeft })}
                   </Text>
                 </View>
                 <View style={{ alignItems: "flex-end", flexShrink: 0 }}>
@@ -2845,7 +3160,7 @@ export function FinanceScreen() {
               </View>
               {surplus > 0 && (
                 <Text style={{ fontSize: 11, color: C.green, marginTop: 6 }}>
-                  Superavit +{fmt(surplus)}
+                  {t("goals.surplusShort", { amount: fmt(surplus) })}
                 </Text>
               )}
               <Text
@@ -2856,7 +3171,7 @@ export function FinanceScreen() {
                   color: C.hint,
                 }}
               >
-                Toca para ver detalle ›
+                {t("drill.tapForDetail")}
               </Text>
             </Pressable>
           );
@@ -2867,21 +3182,26 @@ export function FinanceScreen() {
 
   const describeAlertRule = (a) => {
     if (a.rule.kind === "budget_threshold")
-      return `Presupuesto · ${a.rule.section}: avisar al llegar al ${a.rule.percent}% del mes (si no hay regla, se usa 80%)`;
-    return `Cuenta · ${a.rule.account}: avisar si el saldo cae por debajo de ${fmt(a.rule.minBalance)}`;
+      return t("rules.descriptionBudget", {
+        section: a.rule.section,
+        percent: a.rule.percent,
+      });
+    return t("rules.descriptionAccount", {
+      account: a.rule.account,
+      amount: fmt(a.rule.minBalance),
+    });
   };
 
   const DrillAlerts = () => {
+    const { t } = useTranslation();
     const firstBudgetSec =
       sections.find(
         (s) => (budget[s] || 0) > 0 && s !== "Transferencias",
       ) || sections.find((s) => s !== "Transferencias") || sections[0];
     return (
-      <DrillScreen title="Alertas" onBack={closeDrill}>
+      <DrillScreen title={t("settings.alerts")} onBack={closeDrill}>
         <Text style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
-          En Inicio veras avisos cuando ocurran. Sin reglas extras: gasto del mes
-          vs presupuesto (80% advertencia, 100% superado) y cualquier saldo de
-          cuenta negativo.
+          {t("rules.alertsIntro")}
         </Text>
         <Pressable
           onPress={() =>
@@ -2906,7 +3226,7 @@ export function FinanceScreen() {
           }}
         >
           <Text style={{ textAlign: "center", color: C.blue, fontWeight: 500 }}>
-            + Nueva regla
+            {t("rules.newRuleButton")}
           </Text>
         </Pressable>
         {alertRules.length === 0 && (
@@ -2918,8 +3238,7 @@ export function FinanceScreen() {
               paddingVertical: 20,
             }}
           >
-            No hay reglas adicionales. Pulsa arriba para umbrales de presupuesto
-            o saldo minimo en cuenta.
+            {t("rules.noRulesEmpty")}
           </Text>
         )}
         {alertRules.map((a) => (
@@ -2938,10 +3257,14 @@ export function FinanceScreen() {
                   color: a.severity === "warn" ? C.gold : C.red,
                 }}
               >
-                {a.severity === "warn" ? "Advertencia" : "Atencion"}
+                {a.severity === "warn"
+                  ? t("rules.severityWarn")
+                  : t("rules.severityError")}
               </Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Text style={{ fontSize: 11, color: C.muted }}>Activa</Text>
+                <Text style={{ fontSize: 11, color: C.muted }}>
+                  {t("rules.active")}
+                </Text>
                 <Switch
                   value={a.enabled}
                   onValueChange={(v) =>
@@ -2971,14 +3294,14 @@ export function FinanceScreen() {
                 <Text
                   style={{ textAlign: "center", fontSize: 12, color: C.muted }}
                 >
-                  Editar
+                  {t("common.edit")}
                 </Text>
               </Pressable>
               <Pressable
                 onPress={() =>
                   setConfirmDialog({
-                    msg: "Eliminar esta regla?",
-                    confirmLabel: "Eliminar",
+                    msg: t("rules.deleteConfirmMsg"),
+                    confirmLabel: t("confirm.delete"),
                     onConfirm: () =>
                       setAlertRules((p) => p.filter((x) => x.id !== a.id)),
                   })
@@ -2993,7 +3316,7 @@ export function FinanceScreen() {
                 }}
               >
                 <Text style={{ textAlign: "center", fontSize: 12, color: C.red }}>
-                  Eliminar
+                  {t("confirm.delete")}
                 </Text>
               </Pressable>
             </View>
@@ -3004,8 +3327,10 @@ export function FinanceScreen() {
   };
 
   /* RECURRING */
-  const DrillRecurring = () => (
-    <DrillScreen title="Gastos recurrentes" onBack={closeDrill}>
+  const DrillRecurring = () => {
+    const { t: tr } = useTranslation();
+    return (
+    <DrillScreen title={tr("settings.recurring")} onBack={closeDrill}>
       <View style={{ marginBottom: 16 }}>
         <View
           style={{
@@ -3026,7 +3351,7 @@ export function FinanceScreen() {
             }}
           >
             <Text style={{ fontSize: 10, color: C.muted }}>
-              Total egresos/mes
+              {tr("recurring.totalExpMonth")}
             </Text>
             <Text style={{ fontWeight: 500, color: C.red }}>
               {fmt(
@@ -3047,7 +3372,7 @@ export function FinanceScreen() {
             }}
           >
             <Text style={{ fontSize: 10, color: C.muted }}>
-              Total egresos/año
+              {tr("recurring.totalExpYear")}
             </Text>
             <Text style={{ fontWeight: 500, color: C.gold }}>
               {fmt(
@@ -3093,14 +3418,14 @@ export function FinanceScreen() {
               textAlign: "center",
             }}
           >
-            + Agregar gasto recurrente
+            {tr("recurring.addExpense")}
           </Text>
         </Pressable>
       </View>
       <View style={{ flexDirection: "column", gap: 8 }}>
-        {recTxs.map((t) => (
+        {recTxs.map((rec) => (
           <View
-            key={t.id}
+            key={rec.id}
             style={{
               ...cS,
               flexDirection: "row",
@@ -3116,13 +3441,13 @@ export function FinanceScreen() {
                 style={{ fontSize: 13, fontWeight: 500, color: C.text }}
                 numberOfLines={2}
               >
-                {t.desc}
+                {rec.desc}
               </Text>
               <Text
                 style={{ fontSize: 11, color: C.muted, marginTop: 2 }}
                 numberOfLines={2}
               >
-                {t.section} · {FREQ[t.freq] || "Mensual"} · {t.account}
+                {rec.section} · {tr("freq." + (rec.freq || "monthly"))} · {rec.account}
               </Text>
             </View>
             <View
@@ -3137,24 +3462,25 @@ export function FinanceScreen() {
                 <Text
                   style={{
                     fontWeight: 500,
-                    color: t.type === "income" ? C.green : C.red,
+                    color: rec.type === "income" ? C.green : C.red,
                   }}
                 >
-                  {t.type === "income" ? "+" : "-"}
-                  {fmt(t.amount)}
+                  {rec.type === "income" ? "+" : "-"}
+                  {fmt(rec.amount)}
                 </Text>
                 <Text style={{ fontSize: 10, color: C.hint }}>
-                  {fmt(t.amount * 12)}/año
+                  {fmt(rec.amount * 12)}
+                  {tr("common.perYear")}
                 </Text>
               </View>
               <View style={{ flexDirection: "row", gap: 6 }}>
                 <Pressable
                   onPress={() => {
                     setRecForm({
-                      ...t,
-                      amountDigits: digitsFromNumber(t.amount),
+                      ...rec,
+                      amountDigits: digitsFromNumber(rec.amount),
                     });
-                    setRecModal({ mode: "edit", tx: t });
+                    setRecModal({ mode: "edit", tx: rec });
                   }}
                   style={{
                     width: 44,
@@ -3170,7 +3496,7 @@ export function FinanceScreen() {
                   <Text style={{ fontSize: TY.title2, color: C.muted }}>✎</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => deleteRec(t.id)}
+                  onPress={() => deleteRec(rec.id)}
                   style={{
                     width: 44,
                     height: 44,
@@ -3190,7 +3516,8 @@ export function FinanceScreen() {
         ))}
       </View>
     </DrillScreen>
-  );
+    );
+  };
 
   /* ──────────── RENDER ──────────── */
   balanceDrillPropsRef.current = {
@@ -3264,7 +3591,7 @@ export function FinanceScreen() {
               alignItems: "center",
               justifyContent: "center",
             }}
-            accessibilityLabel="Ajustes"
+            accessibilityLabel={t("settings.title")}
             accessibilityRole="button"
           >
             <View style={{ gap: 5, width: 22, alignItems: "stretch" }}>
@@ -3288,7 +3615,7 @@ export function FinanceScreen() {
                 textTransform: "uppercase",
               }}
             >
-              abril 2025
+              {headerMonthSubtitle}
             </Text>
             <Text
               style={{
@@ -3298,7 +3625,7 @@ export function FinanceScreen() {
                 color: C.text,
               }}
             >
-              Mis finanzas
+              {t("header.title")}
             </Text>
           </View>
           <Pressable
@@ -3313,17 +3640,21 @@ export function FinanceScreen() {
               alignItems: "center",
               justifyContent: "center",
             }}
-            accessibilityLabel="Asistente IA"
+            accessibilityLabel={t("header.aiA11y")}
           >
             <Text style={{ color: C.blue, fontSize: 13, fontWeight: 600 }}>
-              AI
+              {t("header.ai")}
             </Text>
           </Pressable>
         </View>
 
         <GHScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
+          contentContainerStyle={{
+            paddingHorizontal: 20,
+            paddingTop: mainScrollKbPad.paddingTop,
+            paddingBottom: mainScrollKbPad.paddingBottom,
+          }}
           keyboardShouldPersistTaps="handled"
           nestedScrollEnabled
           showsVerticalScrollIndicator
@@ -3412,7 +3743,7 @@ export function FinanceScreen() {
                       marginBottom: 6,
                     }}
                   >
-                    Balance total · Toca para reporte
+                    {t("hero.hint")}
                   </Text>
                   <Text
                     style={{
@@ -3441,7 +3772,7 @@ export function FinanceScreen() {
                           marginBottom: 3,
                         }}
                       >
-                        INGRESOS
+                        {t("hero.income")}
                       </Text>
                       <Text
                         style={{
@@ -3461,7 +3792,7 @@ export function FinanceScreen() {
                           marginBottom: 3,
                         }}
                       >
-                        EGRESOS
+                        {t("hero.expense")}
                       </Text>
                       <Text
                         style={{
@@ -3481,7 +3812,7 @@ export function FinanceScreen() {
                           marginBottom: 3,
                         }}
                       >
-                        AHORRO
+                        {t("hero.savings")}
                       </Text>
                       <Text
                         style={{
@@ -3517,7 +3848,7 @@ export function FinanceScreen() {
                   <Text
                     style={{ fontSize: 13, fontWeight: "500", color: C.text }}
                   >
-                    Cuentas{" "}
+                    {t("dashboard.accountsTitle")}{" "}
                     <Text
                       style={{
                         fontSize: 11,
@@ -3525,7 +3856,7 @@ export function FinanceScreen() {
                         fontWeight: "400",
                       }}
                     >
-                      · Default:{" "}
+                      · {t("dashboard.defaultAccountShort")}{" "}
                       <Text style={{ color: C.green }}>{defaultAccount}</Text>
                     </Text>
                   </Text>
@@ -3600,61 +3931,86 @@ export function FinanceScreen() {
                     color: C.text,
                   }}
                 >
-                  Tendencia mensual
+                  {t("dashboard.monthlyTrend")}
                 </Text>
                 <View
                   style={{
                     flexDirection: "row",
                     gap: 8,
                     alignItems: "flex-end",
-                    height: 72,
+                    minHeight: trendHasAnyData ? 72 : 40,
                   }}
                 >
-                  {trendData.map((m, i) => (
-                    <View
-                      key={i}
+                  {trendHasAnyData ? (
+                    trendData.map((m, i) => {
+                      const hInc =
+                        maxTrend > 0 ? (m.inc / maxTrend) * 56 : 0;
+                      const hExp =
+                        maxTrend > 0 ? (m.exp / maxTrend) * 56 : 0;
+                      const barInc =
+                        m.inc > 0 ? Math.max(2, hInc) : 0;
+                      const barExp =
+                        m.exp > 0 ? Math.max(2, hExp) : 0;
+                      return (
+                        <View
+                          key={i}
+                          style={{
+                            flex: 1,
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 3,
+                          }}
+                        >
+                          <View
+                            style={{
+                              width: "100%",
+                              flexDirection: "row",
+                              gap: 3,
+                              alignItems: "flex-end",
+                              justifyContent: "center",
+                              height: 56,
+                            }}
+                          >
+                            <View
+                              style={{
+                                width: "47%",
+                                borderTopLeftRadius: 4,
+                                borderTopRightRadius: 4,
+                                height: barInc,
+                                backgroundColor: C.green,
+                                opacity: 0.9,
+                              }}
+                            />
+                            <View
+                              style={{
+                                width: "47%",
+                                borderTopLeftRadius: 4,
+                                borderTopRightRadius: 4,
+                                height: barExp,
+                                backgroundColor: C.red,
+                                opacity: 0.9,
+                              }}
+                            />
+                          </View>
+                          <Text style={{ fontSize: 10, color: C.muted }}>
+                            {m.label}
+                          </Text>
+                        </View>
+                      );
+                    })
+                  ) : (
+                    <Text
                       style={{
-                        flex: 1,
-                        flexDirection: "column",
-                        alignItems: "center",
-                        gap: 3,
+                        fontSize: 12,
+                        color: C.muted,
+                        paddingVertical: 8,
+                        width: "100%",
+                        textAlign: "center",
                       }}
                     >
-                      <View
-                        style={{
-                          width: "100%",
-                          flexDirection: "row",
-                          gap: 3,
-                          alignItems: "flex-end",
-                          height: 56,
-                        }}
-                      >
-                        <View
-                          style={{
-                            flex: 1,
-                            borderTopLeftRadius: 4,
-                            borderTopRightRadius: 4,
-                            height: Math.max(0, (m.inc / maxTrend) * 56),
-                            backgroundColor: C.green,
-                            opacity: 0.85,
-                          }}
-                        />
-                        <View
-                          style={{
-                            flex: 1,
-                            borderTopLeftRadius: 4,
-                            borderTopRightRadius: 4,
-                            height: Math.max(0, (m.exp / maxTrend) * 56),
-                            backgroundColor: C.red,
-                            opacity: 0.85,
-                          }}
-                        />
-                      </View>
-                      <Text style={{ fontSize: 10, color: C.muted }}>
-                        {m.label}
-                      </Text>
-                    </View>
-                  ))}
+                      {t("dashboard.trendEmpty")}
+                    </Text>
+                  )}
                 </View>
                 <View style={{ flexDirection: "row", gap: 14, marginTop: 10 }}>
                   <View
@@ -3673,7 +4029,7 @@ export function FinanceScreen() {
                       }}
                     />
                     <Text style={{ fontSize: 11, color: C.muted }}>
-                      Ingresos
+                      {t("balance.income")}
                     </Text>
                   </View>
                   <View
@@ -3692,7 +4048,7 @@ export function FinanceScreen() {
                       }}
                     />
                     <Text style={{ fontSize: 11, color: C.muted }}>
-                      Egresos
+                      {t("balance.expense")}
                     </Text>
                   </View>
                 </View>
@@ -3722,7 +4078,7 @@ export function FinanceScreen() {
                     color: C.text,
                   }}
                 >
-                  Presupuesto vs. real
+                  {t("dashboard.budgetVsActual")}
                 </Text>
                 {dashboardBudgetRows.map((b) => {
                     const pct =
@@ -3807,7 +4163,7 @@ export function FinanceScreen() {
                     color: C.text,
                   }}
                 >
-                  Metas de ahorro
+                  {t("dashboard.savingsGoals")}
                 </Text>
                 {goals.slice(0, 2).map((g) => {
                   const pct = Math.min(
@@ -3853,7 +4209,10 @@ export function FinanceScreen() {
                       <Text
                         style={{ fontSize: 10, color: C.muted, marginTop: 3 }}
                       >
-                        {pct}% · Limite: {g.deadline}
+                        {t("goals.limitProgress", {
+                          pct,
+                          date: g.deadline,
+                        })}
                       </Text>
                     </View>
                   );
@@ -3884,11 +4243,11 @@ export function FinanceScreen() {
                     color: C.text,
                   }}
                 >
-                  Gastos recurrentes
+                  {t("dashboard.recurringCard")}
                 </Text>
-                {recTxs.slice(0, 4).map((t) => (
+                {recTxs.slice(0, 4).map((rec) => (
                   <View
-                    key={t.id}
+                    key={rec.id}
                     style={{
                       flexDirection: "row",
                       justifyContent: "space-between",
@@ -3900,22 +4259,23 @@ export function FinanceScreen() {
                   >
                     <View>
                       <Text style={{ fontSize: 13, color: C.text }}>
-                        {t.desc}
+                        {rec.desc}
                       </Text>
                       <Text
                         style={{ fontSize: 11, color: C.muted, marginTop: 2 }}
                       >
-                        {t.section} · {FREQ[t.freq] || "Mensual"}
+                        {rec.section} ·{" "}
+                        {t("freq." + (rec.freq || "monthly"))}
                       </Text>
                     </View>
                     <Text
                       style={{
                         fontWeight: "500",
-                        color: t.type === "income" ? C.green : C.red,
+                        color: rec.type === "income" ? C.green : C.red,
                       }}
                     >
-                      {t.type === "income" ? "+" : "-"}
-                      {fmt(t.amount)}
+                      {rec.type === "income" ? "+" : "-"}
+                      {fmt(rec.amount)}
                     </Text>
                   </View>
                 ))}
@@ -3928,7 +4288,9 @@ export function FinanceScreen() {
                       textAlign: "center",
                     }}
                   >
-                    +{recTxs.length - 4} mas
+                    {t("dashboard.moreRecurring", {
+                      n: recTxs.length - 4,
+                    })}
                   </Text>
                 )}
               </Pressable>
@@ -3977,7 +4339,7 @@ export function FinanceScreen() {
                     fontWeight: "500",
                   }}
                 >
-                  + Agregar transaccion
+                  {t("tx.add")}
                 </Text>
               </Pressable>
               <GHScrollView
@@ -3991,10 +4353,10 @@ export function FinanceScreen() {
                 }}
               >
                 {[
-                  ["all", "Todos"],
-                  ["income", "Ingresos"],
-                  ["expense", "Egresos"],
-                  ["transfer", "Transferencias"],
+                  ["all", t("filters.all")],
+                  ["income", t("filters.income")],
+                  ["expense", t("filters.expense")],
+                  ["transfer", t("filters.transfers")],
                 ].map(([v, l]) => {
                   const st = pl(
                     filterType === v,
@@ -4044,7 +4406,7 @@ export function FinanceScreen() {
                   return (
                     <Pressable style={st} onPress={() => setFilterSec("all")}>
                       <Text style={{ fontSize: 12, color: st.color }}>
-                        Todas
+                        {t("filters.allFem")}
                       </Text>
                     </Pressable>
                   );
@@ -4063,10 +4425,10 @@ export function FinanceScreen() {
                 })}
               </GHScrollView>
               <Text style={{ fontSize: 12, color: C.muted }}>
-                {filteredTxs.length} transacciones
+                {t("tx.count", { n: filteredTxs.length })}
               </Text>
-              {filteredTxs.map((t) => (
-                <SwipeRow key={t.id} t={t} goals={goals} onView={openTx} />
+              {filteredTxs.map((tx) => (
+                <SwipeRow key={tx.id} tx={tx} goals={goals} onView={openTx} />
               ))}
             </View>
           )}
@@ -4079,7 +4441,7 @@ export function FinanceScreen() {
                   setGoalForm({
                     name: "",
                     targetDigits: "",
-                    deadline: todayStr().slice(0, 7) + "-28",
+                    deadline: todayStr(),
                     color: C.blue,
                   });
                   setGoalModal({ mode: "new" });
@@ -4102,7 +4464,7 @@ export function FinanceScreen() {
                     textAlign: "center",
                   }}
                 >
-                  + Nueva meta
+                  {t("goals.new")}
                 </Text>
               </Pressable>
               {goals.map((g) => {
@@ -4137,7 +4499,10 @@ export function FinanceScreen() {
                         <Text
                           style={{ fontSize: 11, color: C.muted, marginTop: 3 }}
                         >
-                          Limite: {g.deadline} · {daysLeft} dias
+                          {t("goals.limitLine", {
+                            date: g.deadline,
+                            count: daysLeft,
+                          })}
                         </Text>
                         <Pressable
                           onPress={() => {
@@ -4152,7 +4517,7 @@ export function FinanceScreen() {
                           style={{ marginTop: 8, alignSelf: "flex-start" }}
                         >
                           <Text style={{ fontSize: 12, color: C.blue }}>
-                            Editar meta
+                            {t("goals.editBtn")}
                           </Text>
                         </Pressable>
                       </View>
@@ -4180,7 +4545,7 @@ export function FinanceScreen() {
                         {fmt(g.saved)}
                       </Text>
                       <Text style={{ color: C.muted, alignSelf: "flex-end" }}>
-                        de {fmt(g.target)}
+                        {t("goals.ofTarget", { amount: fmt(g.target) })}
                       </Text>
                     </View>
                     <View
@@ -4209,7 +4574,7 @@ export function FinanceScreen() {
                           marginBottom: 8,
                         }}
                       >
-                        Superavit: +{fmt(surplus)}
+                        {t("goals.surplusLine", { amount: fmt(surplus) })}
                       </Text>
                     )}
                     <View
@@ -4223,7 +4588,7 @@ export function FinanceScreen() {
                         }}
                       >
                         <Text style={{ fontSize: 10, color: C.muted }}>
-                          Avance
+                          {t("goals.progress")}
                         </Text>
                         <Text style={{ fontWeight: 500, color: g.color }}>
                           {pctNum}%
@@ -4237,7 +4602,7 @@ export function FinanceScreen() {
                         }}
                       >
                         <Text style={{ fontSize: 10, color: C.muted }}>
-                          Pendiente
+                          {t("goals.pending")}
                         </Text>
                         <Text style={{ fontWeight: 500, color: C.text }}>
                           {fmt(remaining)}
@@ -4251,7 +4616,7 @@ export function FinanceScreen() {
                         }}
                       >
                         <Text style={{ fontSize: 10, color: C.muted }}>
-                          Diario
+                          {t("goals.daily")}
                         </Text>
                         <Text
                           style={{
@@ -4266,7 +4631,7 @@ export function FinanceScreen() {
                     <Text
                       style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}
                     >
-                      Agregar ahorro (transfiere desde cuenta)
+                      {t("goals.addSavings")}
                     </Text>
                     <View
                       style={{
@@ -4374,24 +4739,105 @@ export function FinanceScreen() {
                 }}
               >
                 {[
-                  ["balance", "Balance"],
-                  ["sections", "Secciones"],
-                  ["top", "Top Gastos"],
-                  ["subs", "Suscripciones"],
-                  ["txlist", "Listado"],
+                  ["day", t("reports.rangeDay")],
+                  ["week", t("reports.rangeWeek")],
+                  ["month", t("reports.rangeMonth")],
+                  ["d30", t("reports.range30")],
+                  ["d60", t("reports.range60")],
+                  ["d90", t("reports.range90")],
+                  ["m6", t("reports.range6m")],
+                  ["y1", t("reports.range1y")],
+                ].map(([k, label]) => {
+                  const st = pl(reportTimeRange === k);
+                  return (
+                    <Pressable
+                      key={k}
+                      style={st}
+                      onPress={() => setReportTimeRange(k)}
+                    >
+                      <Text style={{ fontSize: 11, color: st.color }}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </GHScrollView>
+              <GHScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                  paddingBottom: 4,
+                }}
+              >
+                {[
+                  ["balance", t("reports.chipBalance")],
+                  ["sections", t("reports.chipSections")],
+                  ["top", t("reports.chipTop")],
+                  ["txlist", t("reports.chipTxList")],
                 ].map(([v, l]) => {
                   const st = pl(reportView === v);
                   return (
                     <Pressable
                       key={v}
                       style={st}
-                      onPress={() => setReportView(v)}
+                      onPress={() => {
+                        setReportView(v);
+                        setReportSectionSel(null);
+                        if (v !== "top" && v !== "txlist")
+                          setReportFilterSection(null);
+                      }}
                     >
                       <Text style={{ fontSize: 12, color: st.color }}>{l}</Text>
                     </Pressable>
                   );
                 })}
               </GHScrollView>
+              {(reportView === "top" || reportView === "txlist") && (
+                <GHScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingBottom: 2,
+                  }}
+                >
+                  {(() => {
+                    const stAll = pl(!reportFilterSection);
+                    return (
+                      <Pressable
+                        style={stAll}
+                        onPress={() => setReportFilterSection(null)}
+                      >
+                        <Text style={{ fontSize: 12, color: stAll.color }}>
+                          {t("filters.all")}
+                        </Text>
+                      </Pressable>
+                    );
+                  })()}
+                  {expenseSections.map((s) => {
+                    const sel =
+                      normSec(reportFilterSection).toLowerCase() ===
+                      normSec(s).toLowerCase();
+                    const st = pl(sel);
+                    return (
+                      <Pressable
+                        key={s}
+                        style={st}
+                        onPress={() => setReportFilterSection(s)}
+                      >
+                        <Text style={{ fontSize: 12, color: st.color }}>
+                          {s}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </GHScrollView>
+              )}
               {reportView === "balance" && (
                 <>
                   <View style={{ gap: 10 }}>
@@ -4406,7 +4852,7 @@ export function FinanceScreen() {
                             marginBottom: 6,
                           }}
                         >
-                          Ingresos
+                          {t("balance.income")}
                         </Text>
                         <Text
                           style={{
@@ -4415,7 +4861,7 @@ export function FinanceScreen() {
                             color: C.green,
                           }}
                         >
-                          {fmt(tInc)}
+                          {fmt(reportTInc)}
                         </Text>
                       </View>
                       <View style={mSf}>
@@ -4428,7 +4874,7 @@ export function FinanceScreen() {
                             marginBottom: 6,
                           }}
                         >
-                          Egresos
+                          {t("balance.expense")}
                         </Text>
                         <Text
                           style={{
@@ -4437,7 +4883,7 @@ export function FinanceScreen() {
                             color: C.red,
                           }}
                         >
-                          {fmt(tExp)}
+                          {fmt(reportTExp)}
                         </Text>
                       </View>
                     </View>
@@ -4452,16 +4898,16 @@ export function FinanceScreen() {
                             marginBottom: 6,
                           }}
                         >
-                          Balance
+                          {t("reports.balanceLabel")}
                         </Text>
                         <Text
                           style={{
                             fontSize: 20,
                             fontWeight: 500,
-                            color: bal >= 0 ? C.green : C.red,
+                            color: reportBal >= 0 ? C.green : C.red,
                           }}
                         >
-                          {fmt(bal)}
+                          {fmt(reportBal)}
                         </Text>
                       </View>
                       <View style={mSf}>
@@ -4474,7 +4920,7 @@ export function FinanceScreen() {
                             marginBottom: 6,
                           }}
                         >
-                          Tasa ahorro
+                          {t("reports.savingsRate")}
                         </Text>
                         <Text
                           style={{
@@ -4483,13 +4929,22 @@ export function FinanceScreen() {
                             color: C.gold,
                           }}
                         >
-                          {savRate}%
+                          {reportSavRate}%
                         </Text>
                       </View>
                     </View>
                   </View>
                   <View style={cS}>
-                    {byAccount.map((a) => (
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: C.muted,
+                        marginBottom: 10,
+                      }}
+                    >
+                      {t("reports.accountNetPeriod")}
+                    </Text>
+                    {reportByAccount.map((a) => (
                       <View
                         key={a.a}
                         style={{
@@ -4518,28 +4973,195 @@ export function FinanceScreen() {
                   </View>
                 </>
               )}
-              {reportView === "sections" && (
-                <View style={cS}>
-                  <Text
+              {reportView === "sections" &&
+                (reportSectionSel ? (
+                  <View
                     style={{
-                      fontSize: 13,
-                      fontWeight: 500,
-                      marginBottom: 14,
-                      color: C.text,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 12,
                     }}
                   >
-                    Gastos por seccion
-                  </Text>
-                  {bySection
-                    .filter((b) => b.spent > 0)
-                    .sort((a, b) => b.spent - a.spent)
-                    .map((b) => (
-                      <View key={b.s} style={{ marginBottom: 14 }}>
-                        <View
+                    <Pressable
+                      onPress={() => setReportSectionSel(null)}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        paddingVertical: 4,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 14,
+                          color: C.blue,
+                          fontWeight: 500,
+                        }}
+                      >
+                        ‹ {t("common.back")}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          color: C.muted,
+                          flex: 1,
+                        }}
+                        numberOfLines={1}
+                      >
+                        {t("reports.chipSections")} › {reportSectionSel}
+                      </Text>
+                    </Pressable>
+                    <View style={{ flexDirection: "row", gap: 10 }}>
+                      <View style={mSf}>
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            color: C.muted,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.85,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {t("balance.expense")}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 20,
+                            fontWeight: 500,
+                            color: C.red,
+                          }}
+                        >
+                          {fmt(reportSectionTotals.exp)}
+                        </Text>
+                      </View>
+                      <View style={mSf}>
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            color: C.muted,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.85,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {t("balance.income")}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 20,
+                            fontWeight: 500,
+                            color: C.green,
+                          }}
+                        >
+                          {fmt(reportSectionTotals.inc)}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={cS}>
+                      {reportSectionTxs.length === 0 ? (
+                        <Text
+                          style={{
+                            fontSize: 13,
+                            color: C.muted,
+                            paddingVertical: 8,
+                          }}
+                        >
+                          {t("reports.sectionEmpty")}
+                        </Text>
+                      ) : (
+                        [...reportSectionTxs]
+                          .sort((a, b) => b.date.localeCompare(a.date))
+                          .map((tx) => (
+                            <View
+                              key={tx.id}
+                              style={{
+                                flexDirection: "row",
+                                justifyContent: "space-between",
+                                paddingVertical: 9,
+                                borderBottomWidth: 1,
+                                borderBottomColor: C.border,
+                              }}
+                            >
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <Text
+                                  style={{ fontSize: 13, color: C.text }}
+                                  numberOfLines={2}
+                                >
+                                  {tx.desc}
+                                </Text>
+                                <Text
+                                  style={{
+                                    fontSize: 11,
+                                    color: C.muted,
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  {tx.date}
+                                  {tx.account ? ` · ${tx.account}` : ""}
+                                  {tx.recurring && tx.type === "expense"
+                                    ? ` · ${t("freq." + (tx.freq || "monthly"))}`
+                                    : ""}
+                                </Text>
+                              </View>
+                              <Text
+                                style={{
+                                  fontWeight: 500,
+                                  marginLeft: 8,
+                                  color:
+                                    tx.type === "income"
+                                      ? C.green
+                                      : tx.type === "expense"
+                                        ? C.red
+                                        : C.blue,
+                                }}
+                              >
+                                {tx.type === "transfer"
+                                  ? fmt(tx.amount)
+                                  : (tx.type === "income" ? "+" : "-") +
+                                    fmt(tx.amount)}
+                              </Text>
+                            </View>
+                          ))
+                      )}
+                    </View>
+                  </View>
+                ) : (
+                  <View style={cS}>
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 500,
+                        marginBottom: 6,
+                        color: C.text,
+                      }}
+                    >
+                      {t("reports.chipSections")}
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        color: C.muted,
+                        marginBottom: 14,
+                      }}
+                    >
+                      {t("reports.sectionPickHint")}
+                    </Text>
+                    {expenseSections.length === 0 ? (
+                      <Text style={{ fontSize: 13, color: C.muted }}>
+                        {t("reports.sectionListEmpty")}
+                      </Text>
+                    ) : (
+                      expenseSections.map((s) => (
+                        <Pressable
+                          key={s}
+                          onPress={() => setReportSectionSel(s)}
                           style={{
                             flexDirection: "row",
+                            alignItems: "center",
                             justifyContent: "space-between",
-                            marginBottom: 5,
+                            paddingVertical: 12,
+                            borderBottomWidth: 1,
+                            borderBottomColor: C.border,
                           }}
                         >
                           <View
@@ -4547,6 +5169,8 @@ export function FinanceScreen() {
                               flexDirection: "row",
                               alignItems: "center",
                               gap: 6,
+                              flex: 1,
+                              minWidth: 0,
                             }}
                           >
                             <View
@@ -4554,228 +5178,129 @@ export function FinanceScreen() {
                                 width: 7,
                                 height: 7,
                                 borderRadius: 4,
-                                backgroundColor: sectionDotColor(b.s, C),
+                                backgroundColor: sectionDotColor(s, C),
                               }}
                             />
-                            <Text style={{ fontSize: 12, color: C.text }}>
-                              {b.s}
+                            <Text
+                              style={{
+                                fontSize: 14,
+                                color: C.text,
+                              }}
+                              numberOfLines={1}
+                            >
+                              {s}
                             </Text>
                           </View>
-                          <Text style={{ fontSize: 12, color: C.muted }}>
-                            {fmt(b.spent)} ·{" "}
-                            {tExp > 0 ? Math.round((b.spent / tExp) * 100) : 0}%
-                          </Text>
-                        </View>
-                        <View
-                          style={{
-                            height: 6,
-                            backgroundColor: C.bg3,
-                            borderRadius: 4,
-                            overflow: "hidden",
-                          }}
-                        >
-                          <View
-                            style={{
-                              width:
-                                (tExp > 0 ? (b.spent / tExp) * 100 : 0) + "%",
-                              height: "100%",
-                              backgroundColor: sectionDotColor(b.s, C),
-                              opacity: 0.85,
-                              borderRadius: 4,
-                            }}
-                          />
-                        </View>
-                      </View>
-                    ))}
-                </View>
-              )}
+                          <Text style={{ fontSize: 14, color: C.hint }}>›</Text>
+                        </Pressable>
+                      ))
+                    )}
+                  </View>
+                ))}
               {reportView === "top" && (
-                <View style={cS}>
+                <View style={{ gap: 12 }}>
                   <Text
                     style={{
-                      fontSize: 13,
-                      fontWeight: 500,
-                      marginBottom: 14,
+                      fontSize: 15,
+                      fontWeight: "600",
+                      letterSpacing: -0.2,
                       color: C.text,
+                      paddingHorizontal: 2,
                     }}
                   >
-                    Top 5 gastos
+                    {t("reports.top10Title")}
                   </Text>
-                  {[...txs]
-                    .filter((t) => t.type === "expense")
-                    .sort((a, b) => b.amount - a.amount)
-                    .slice(0, 5)
-                    .map((t, i) => (
-                      <View
-                        key={t.id}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 12,
-                          paddingVertical: 10,
-                          paddingHorizontal: 0,
-                          borderBottomWidth: 1,
-                          borderBottomColor: C.border,
-                        }}
-                      >
+                  <View style={{ gap: 10 }}>
+                    {[...txsForReportFilter]
+                      .filter((tx) => tx.type === "expense")
+                      .sort((a, b) => b.amount - a.amount)
+                      .slice(0, 10)
+                      .map((tx, i) => (
                         <View
+                          key={tx.id}
                           style={{
-                            width: 24,
-                            height: 24,
-                            borderRadius: 6,
-                            backgroundColor: C.bg3,
+                            flexDirection: "row",
                             alignItems: "center",
-                            justifyContent: "center",
-                            flexShrink: 0,
+                            gap: 14,
+                            minHeight: 58,
+                            paddingVertical: 14,
+                            paddingHorizontal: 16,
+                            borderRadius: 16,
+                            backgroundColor: C.bg3,
+                            borderWidth: 1,
+                            borderColor: C.border,
                           }}
                         >
-                          <Text
+                          <View
                             style={{
-                              fontSize: 11,
-                              color: C.muted,
-                              fontWeight: 500,
+                              width: 36,
+                              height: 36,
+                              borderRadius: 18,
+                              backgroundColor: C.bg2,
+                              borderWidth: 1,
+                              borderColor: C.border,
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
                             }}
                           >
-                            #{i + 1}
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                color: i < 3 ? C.blue : C.muted,
+                                fontWeight: "700",
+                              }}
+                            >
+                              {i + 1}
+                            </Text>
+                          </View>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text
+                              style={{
+                                fontSize: 15,
+                                fontWeight: "600",
+                                color: C.text,
+                                lineHeight: 20,
+                              }}
+                              numberOfLines={2}
+                            >
+                              {tx.desc}
+                            </Text>
+                            <Text
+                              style={{
+                                fontSize: 12,
+                                color: C.muted,
+                                marginTop: 4,
+                              }}
+                              numberOfLines={1}
+                            >
+                              {tx.section} · {tx.date}
+                            </Text>
+                          </View>
+                          <Text
+                            style={{
+                              fontSize: 16,
+                              fontWeight: "600",
+                              color: C.red,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {fmt(tx.amount)}
                           </Text>
                         </View>
-                        <View style={{ flex: 1 }}>
-                          <Text
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 500,
-                              color: C.text,
-                            }}
-                          >
-                            {t.desc}
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: 11,
-                              color: C.muted,
-                              marginTop: 2,
-                            }}
-                          >
-                            {t.section} · {t.date}
-                          </Text>
-                        </View>
-                        <Text style={{ fontWeight: 500, color: C.red }}>
-                          {fmt(t.amount)}
-                        </Text>
-                      </View>
-                    ))}
+                      ))}
+                  </View>
                 </View>
               )}
-              {reportView === "subs" &&
-                (() => {
-                  const subs = txs.filter(
-                    (t) => t.recurring && t.type === "expense",
-                  );
-                  const monthly = subs.reduce((s, t) => s + t.amount, 0);
-                  return (
-                    <View
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 12,
-                      }}
-                    >
-                      <View style={{ flexDirection: "row", gap: 10 }}>
-                        <View style={mSf}>
-                          <Text
-                            style={{
-                              fontSize: 10,
-                              color: C.muted,
-                              textTransform: "uppercase",
-                              letterSpacing: 0.85,
-                              marginBottom: 6,
-                            }}
-                          >
-                            Mensual
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: 20,
-                              fontWeight: 500,
-                              color: C.red,
-                            }}
-                          >
-                            {fmt(monthly)}
-                          </Text>
-                        </View>
-                        <View style={mSf}>
-                          <Text
-                            style={{
-                              fontSize: 10,
-                              color: C.muted,
-                              textTransform: "uppercase",
-                              letterSpacing: 0.85,
-                              marginBottom: 6,
-                            }}
-                          >
-                            Anual
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: 20,
-                              fontWeight: 500,
-                              color: C.gold,
-                            }}
-                          >
-                            {fmt(monthly * 12)}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={cS}>
-                        {subs.map((t) => (
-                          <View
-                            key={t.id}
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              paddingVertical: 9,
-                              borderBottomWidth: 1,
-                              borderBottomColor: C.border,
-                            }}
-                          >
-                            <View>
-                              <Text style={{ fontSize: 13, color: C.text }}>
-                                {t.desc}
-                              </Text>
-                              <Text
-                                style={{
-                                  fontSize: 11,
-                                  color: C.muted,
-                                  marginTop: 2,
-                                }}
-                              >
-                                {t.section} · {FREQ[t.freq] || "Mensual"}
-                              </Text>
-                            </View>
-                            <View style={{ alignItems: "flex-end" }}>
-                              <Text style={{ fontWeight: 500, color: C.red }}>
-                                {fmt(t.amount)}/mes
-                              </Text>
-                              <Text style={{ fontSize: 10, color: C.hint }}>
-                                {fmt(t.amount * 12)}/año
-                              </Text>
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  );
-                })()}
               {reportView === "txlist" && (
                 <View
                   style={{ display: "flex", flexDirection: "column", gap: 10 }}
                 >
-                  {[...txs]
+                  {[...txsForReportFilter]
                     .sort((a, b) => b.date.localeCompare(a.date))
-                    .map((t) => (
+                    .map((tx) => (
                       <View
-                        key={t.id}
+                        key={tx.id}
                         style={{
                           flexDirection: "row",
                           justifyContent: "space-between",
@@ -4787,7 +5312,7 @@ export function FinanceScreen() {
                         <Text
                           style={{ fontSize: 13, color: C.muted, minWidth: 80 }}
                         >
-                          {t.date}
+                          {tx.date}
                         </Text>
                         <Text
                           style={{
@@ -4797,23 +5322,24 @@ export function FinanceScreen() {
                             color: C.text,
                           }}
                         >
-                          {t.desc}{" "}
-                          <Text style={{ color: C.hint }}>· {t.section}</Text>
+                          {tx.desc}{" "}
+                          <Text style={{ color: C.hint }}>· {tx.section}</Text>
                         </Text>
                         <Text
                           style={{
                             fontWeight: 500,
                             color:
-                              t.type === "income"
+                              tx.type === "income"
                                 ? C.green
-                                : t.type === "expense"
+                                : tx.type === "expense"
                                   ? C.red
                                   : C.blue,
                           }}
                         >
-                          {t.type === "transfer"
-                            ? fmt(t.amount)
-                            : (t.type === "income" ? "+" : "-") + fmt(t.amount)}
+                          {tx.type === "transfer"
+                            ? fmt(tx.amount)
+                            : (tx.type === "income" ? "+" : "-") +
+                              fmt(tx.amount)}
                         </Text>
                       </View>
                     ))}
@@ -4858,7 +5384,7 @@ export function FinanceScreen() {
                   <Text
                     style={{ fontWeight: "600", fontSize: 17, color: C.text }}
                   >
-                    {MN[calMonth.getMonth()]} {calMonth.getFullYear()}
+                    {calMonthTitle}
                   </Text>
                   <Pressable
                     onPress={() =>
@@ -4884,9 +5410,9 @@ export function FinanceScreen() {
                 </View>
                 <View style={{ marginTop: 4 }}>
                   <View style={{ flexDirection: "row" }}>
-                    {DN.map((d) => (
+                    {calWeekdayLabels.map((d, wi) => (
                       <View
-                        key={d}
+                        key={"calwd-" + wi}
                         style={{
                           flex: 1,
                           alignItems: "center",
@@ -5026,7 +5552,7 @@ export function FinanceScreen() {
                       color: C.text,
                     }}
                   >
-                    Dia {calSel}
+                    {t("calendar.daySelected", { day: calSel })}
                   </Text>
                   <TxList txs={txOnDay(calSel)} goals={goals} />
                 </View>
@@ -5055,7 +5581,7 @@ export function FinanceScreen() {
                           marginBottom: 4,
                         }}
                       >
-                        Ingresos
+                        {t("balance.income")}
                       </Text>
                       <Text style={{ fontWeight: 500, color: C.green }}>
                         {fmt(mI)}
@@ -5071,7 +5597,7 @@ export function FinanceScreen() {
                           marginBottom: 4,
                         }}
                       >
-                        Egresos
+                        {t("balance.expense")}
                       </Text>
                       <Text style={{ fontWeight: 500, color: C.red }}>
                         {fmt(mE)}
@@ -5087,7 +5613,7 @@ export function FinanceScreen() {
                           marginBottom: 4,
                         }}
                       >
-                        Balance
+                        {t("reports.balanceLabel")}
                       </Text>
                       <Text
                         style={{
@@ -5145,15 +5671,11 @@ export function FinanceScreen() {
                 gap: 5,
               }}
             >
-              <Text
-                style={{
-                  fontSize: TY.tabIcon,
-                  lineHeight: 28,
-                  color: tab === t.id ? C.green : C.hint,
-                }}
-              >
-                {t.sym}
-              </Text>
+              <Ionicons
+                name={tab === t.id ? t.iconOn : t.iconOff}
+                size={TY.tabIcon + 2}
+                color={tab === t.id ? C.green : C.hint}
+              />
               <Text
                 style={{
                   fontSize: TY.tabLabel,
@@ -5193,7 +5715,7 @@ export function FinanceScreen() {
                 pointerEvents={drawerBackdropBlocking ? "auto" : "none"}
                 style={StyleSheet.absoluteFillObject}
                 onPress={closeSettingsDrawer}
-                accessibilityLabel="Cerrar ajustes"
+                accessibilityLabel={t("common.close")}
               />
             </Animated.View>
             <Animated.View
@@ -5232,7 +5754,7 @@ export function FinanceScreen() {
                     color: C.text,
                   }}
                 >
-                  Ajustes
+                  {t("settings.title")}
                 </Text>
                 <Pressable
                   onPress={closeSettingsDrawer}
@@ -5258,7 +5780,11 @@ export function FinanceScreen() {
               <ScrollView
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ gap: 8, paddingBottom: 24 }}
+                contentContainerStyle={{
+                  gap: 8,
+                  paddingTop: mainScrollKbPad.paddingTop,
+                  paddingBottom: mainScrollKbPad.paddingBottom,
+                }}
               >
                 <View
                   style={{
@@ -5279,7 +5805,7 @@ export function FinanceScreen() {
                         color: C.text,
                       }}
                     >
-                      Modo oscuro
+                      {t("settings.darkMode")}
                     </Text>
                     <Text
                       style={{
@@ -5288,7 +5814,7 @@ export function FinanceScreen() {
                         marginTop: 4,
                       }}
                     >
-                      Interfaz clara u oscura
+                      {t("settings.darkModeSub")}
                     </Text>
                   </View>
                   <Switch
@@ -5304,6 +5830,64 @@ export function FinanceScreen() {
                     }
                   />
                 </View>
+                <View
+                  style={{
+                    ...cS,
+                    paddingVertical: 16,
+                    paddingHorizontal: 18,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: TY.bodyEm,
+                      fontWeight: "600",
+                      color: C.text,
+                    }}
+                  >
+                    {t("settings.language")}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: TY.caption,
+                      color: C.muted,
+                      marginTop: 4,
+                      marginBottom: 8,
+                    }}
+                  >
+                    {t("settings.languageSub")}
+                  </Text>
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: C.border,
+                      borderRadius: 10,
+                      overflow: "hidden",
+                      backgroundColor: C.bg3,
+                    }}
+                  >
+                    <ThemedPicker
+                      C={C}
+                      selectedValue={i18n.language.split("-")[0]}
+                      onValueChange={(v) => {
+                        setAppLanguage(String(v));
+                        AsyncStorage.setItem(
+                          LANGUAGE_STORAGE_KEY,
+                          String(v),
+                        ).catch(() => {});
+                      }}
+                      style={{ width: "100%" }}
+                    >
+                      {sortedSupportedLocales().map((l) => (
+                        <Picker.Item
+                          key={l.code}
+                          label={l.native}
+                          value={l.code}
+                          color={C.text}
+                        />
+                      ))}
+                    </ThemedPicker>
+                  </View>
+                </View>
                 <Pressable
                   onPress={() => openDrill("alerts")}
                   style={{
@@ -5316,7 +5900,7 @@ export function FinanceScreen() {
                   }}
                 >
                   <Text style={{ fontSize: TY.body, color: C.text }}>
-                    Alertas
+                    {t("settings.alerts")}
                   </Text>
                   <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
                 </Pressable>
@@ -5332,7 +5916,7 @@ export function FinanceScreen() {
                   }}
                 >
                   <Text style={{ fontSize: TY.body, color: C.text }}>
-                    Gastos recurrentes
+                    {t("settings.recurring")}
                   </Text>
                   <Text style={{ color: C.hint, fontSize: TY.bodyEm }}>›</Text>
                 </Pressable>
@@ -5344,7 +5928,7 @@ export function FinanceScreen() {
                     paddingHorizontal: 4,
                   }}
                 >
-                  Los datos se guardan en este dispositivo.
+                  {t("settings.dataLocal")}
                 </Text>
               </ScrollView>
             </Animated.View>
@@ -5358,10 +5942,10 @@ export function FinanceScreen() {
             height="88vh"
             title={
               txModal.mode === "view"
-                ? "Detalle"
+                ? t("tx.detail")
                 : txModal.mode === "edit"
-                  ? "Editar transaccion"
-                  : "Nueva transaccion"
+                  ? t("tx.edit")
+                  : t("tx.new")
             }
           >
             <View
@@ -5387,8 +5971,8 @@ export function FinanceScreen() {
                 showsVerticalScrollIndicator
                 style={{ flex: 1, minHeight: 120 }}
                 contentContainerStyle={{
-                  paddingTop: 4 + Math.round(txFormKbPad / 2),
-                  paddingBottom: 28 + Math.round(txFormKbPad / 4),
+                  paddingTop: formKbPad.paddingTop,
+                  paddingBottom: formKbPad.paddingBottom,
                 }}
               >
                 <TxForm
@@ -5401,6 +5985,7 @@ export function FinanceScreen() {
                   goals={goals}
                   accounts={accounts}
                   expenseSections={expenseSections}
+                  scrollFieldIntoView={scrollTxFieldIntoView}
                 />
               </ScrollView>
               <View
@@ -5435,7 +6020,7 @@ export function FinanceScreen() {
                           textAlign: "center",
                         }}
                       >
-                        Eliminar
+                        {t("tx.delete")}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -5456,7 +6041,7 @@ export function FinanceScreen() {
                           textAlign: "center",
                         }}
                       >
-                        Editar
+                        {t("common.edit")}
                       </Text>
                     </Pressable>
                   </>
@@ -5480,7 +6065,7 @@ export function FinanceScreen() {
                         textAlign: "center",
                       }}
                     >
-                      Guardar cambios
+                      {t("tx.saveChanges")}
                     </Text>
                   </Pressable>
                 )}
@@ -5493,47 +6078,59 @@ export function FinanceScreen() {
         {accModal && (
           <Modal
             onClose={() => setAccModal(null)}
-            title={accModal.mode === "add" ? "Agregar cuenta" : "Editar cuenta"}
+            title={
+              accModal.mode === "add" ? t("accounts.add") : t("accounts.edit")
+            }
           >
-            <View style={{ marginBottom: 16 }}>
-              <Text
-                style={{
-                  fontSize: 11,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.65,
-                  marginBottom: 8,
-                }}
-              >
-                Nombre de la cuenta
-              </Text>
-              <TextInput
-                value={accForm}
-                onChangeText={setAccForm}
-                style={iS}
-              />
-            </View>
-            <Pressable
-              onPress={saveAcc}
-              style={{
-                width: "100%",
-                paddingVertical: 13,
-                paddingHorizontal: 12,
-                borderRadius: 12,
-                backgroundColor: C.green,
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
+              style={{ flex: 1 }}
+              contentContainerStyle={{
+                paddingTop: formKbPad.paddingTop,
+                paddingBottom: formKbPad.paddingBottom,
               }}
             >
-              <Text
+              <View style={{ marginBottom: 16 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.65,
+                    marginBottom: 8,
+                  }}
+                >
+                  {t("accounts.name")}
+                </Text>
+                <TextInput
+                  value={accForm}
+                  onChangeText={setAccForm}
+                  style={iS}
+                />
+              </View>
+              <Pressable
+                onPress={saveAcc}
                 style={{
-                  color: C.onPrimary,
-                  fontSize: 15,
-                  fontWeight: 500,
-                  textAlign: "center",
+                  width: "100%",
+                  paddingVertical: 13,
+                  paddingHorizontal: 12,
+                  borderRadius: 12,
+                  backgroundColor: C.green,
                 }}
               >
-                Guardar
-              </Text>
-            </Pressable>
+                <Text
+                  style={{
+                    color: C.onPrimary,
+                    fontSize: 15,
+                    fontWeight: 500,
+                    textAlign: "center",
+                  }}
+                >
+                  {t("accounts.save")}
+                </Text>
+              </Pressable>
+            </ScrollView>
           </Modal>
         )}
 
@@ -5543,10 +6140,20 @@ export function FinanceScreen() {
             onClose={() => setRecModal(null)}
             height="80vh"
             title={
-              recModal.mode === "add" ? "Nuevo recurrente" : "Editar recurrente"
+              recModal.mode === "add"
+                ? t("recurring.new")
+                : t("recurring.edit")
             }
           >
-            <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
+              contentContainerStyle={{
+                paddingTop: formKbPad.paddingTop,
+                paddingBottom: formKbPad.paddingBottom,
+              }}
+            >
               <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
                 {["expense", "income"].map((tp) => (
                   <Pressable
@@ -5580,7 +6187,9 @@ export function FinanceScreen() {
                         fontWeight: recForm.type === tp ? "500" : "400",
                       }}
                     >
-                      {tp === "income" ? "↑ Ingreso" : "↓ Egreso"}
+                      {tp === "income"
+                        ? t("recurring.income")
+                        : t("recurring.expense")}
                     </Text>
                   </Pressable>
                 ))}
@@ -5595,7 +6204,7 @@ export function FinanceScreen() {
                     marginBottom: 5,
                   }}
                 >
-                  Monto
+                  {t("tx.amount")}
                 </Text>
                 <TextInput
                   keyboardType="number-pad"
@@ -5609,31 +6218,48 @@ export function FinanceScreen() {
                   style={iS}
                 />
               </View>
-              {[
-                { l: "Descripcion", k: "desc" },
-                { l: "Fecha inicio", k: "date" },
-              ].map((f) => (
-                <View key={f.k} style={{ marginBottom: 12 }}>
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: C.muted,
-                      textTransform: "uppercase",
-                      letterSpacing: 0.5,
-                      marginBottom: 5,
-                    }}
-                  >
-                    {f.l}
-                  </Text>
-                  <TextInput
-                    value={String(recForm[f.k] || "")}
-                    onChangeText={(v) =>
-                      setRecForm((p) => ({ ...p, [f.k]: v }))
-                    }
-                    style={iS}
-                  />
-                </View>
-              ))}
+              <View style={{ marginBottom: 12 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    marginBottom: 5,
+                  }}
+                >
+                  {t("tx.desc")}
+                </Text>
+                <TextInput
+                  value={String(recForm.desc || "")}
+                  onChangeText={(v) =>
+                    setRecForm((p) => ({ ...p, desc: v }))
+                  }
+                  style={iS}
+                />
+              </View>
+              <View style={{ marginBottom: 12 }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                    marginBottom: 5,
+                  }}
+                >
+                  {t("recurring.startDate")}
+                </Text>
+                <TxDateField
+                  readOnly={false}
+                  dateStr={String(recForm.date || "")}
+                  onChangeYmd={(ymd) =>
+                    setRecForm((p) => ({ ...p, date: ymd }))
+                  }
+                  C={C}
+                  iS={iS}
+                />
+              </View>
               <View
                 style={{
                   flexDirection: "row",
@@ -5643,8 +6269,8 @@ export function FinanceScreen() {
                 }}
               >
                 {[
-                  { l: "Seccion", k: "section", opts: expenseSections },
-                  { l: "Cuenta", k: "account", opts: accounts },
+                  { l: t("tx.section"), k: "section", opts: expenseSections },
+                  { l: t("tx.account"), k: "account", opts: accounts },
                 ].map((f) => (
                   <View key={f.k} style={{ flex: 1, minWidth: 140 }}>
                     <Text
@@ -5688,12 +6314,12 @@ export function FinanceScreen() {
               </View>
               <View style={{ marginBottom: 16 }}>
                 <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-                  Frecuencia
+                  {t("common.frequency")}
                 </Text>
                 <View
                   style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}
                 >
-                  {Object.entries(FREQ).map(([k, v]) => (
+                  {FREQ_KEYS.map((k) => (
                     <Pressable
                       key={k}
                       onPress={() => setRecForm((p) => ({ ...p, freq: k }))}
@@ -5712,7 +6338,7 @@ export function FinanceScreen() {
                           color: recForm.freq === k ? C.green : C.muted,
                         }}
                       >
-                        {v}
+                        {t("freq." + k)}
                       </Text>
                     </Pressable>
                   ))}
@@ -5736,7 +6362,7 @@ export function FinanceScreen() {
                     fontWeight: "500",
                   }}
                 >
-                  Guardar
+                  {t("recurring.save")}
                 </Text>
               </Pressable>
             </ScrollView>
@@ -5758,10 +6384,10 @@ export function FinanceScreen() {
                 <Text
                   style={{ fontSize: 15, fontWeight: "500", color: C.text }}
                 >
-                  Asistente IA Pro
+                  {t("ai.title")}
                 </Text>
                 <Text style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>
-                  Analisis · Registro · Tickets
+                  {t("ai.sub")}
                 </Text>
               </View>
               <Pressable onPress={() => setAiOpen(false)}>
@@ -5771,7 +6397,11 @@ export function FinanceScreen() {
             <ScrollView
               ref={aiRef}
               style={{ flex: 1, maxHeight: 280 }}
-              contentContainerStyle={{ gap: 10, paddingBottom: 8 }}
+              contentContainerStyle={{
+                gap: 10,
+                paddingTop: aiScrollKbPad.paddingTop,
+                paddingBottom: aiScrollKbPad.paddingBottom,
+              }}
               onContentSizeChange={() =>
                 aiRef.current?.scrollToEnd({ animated: true })
               }
@@ -5803,7 +6433,9 @@ export function FinanceScreen() {
                         lineHeight: 20,
                       }}
                     >
-                      {m.text}
+                      {m.text === AI_WELCOME_PLACEHOLDER
+                        ? t("ai.help")
+                        : m.text}
                     </Text>
                     {m.highlight && (
                       <Text
@@ -5819,7 +6451,7 @@ export function FinanceScreen() {
                           color: C.green,
                         }}
                       >
-                        Registrado:{" "}
+                        {t("ai.registeredLine")}{" "}
                         {m.highlight.type === "transfer"
                           ? fmt(m.highlight.amount)
                           : (m.highlight.type === "income" ? "+" : "-") +
@@ -5843,7 +6475,7 @@ export function FinanceScreen() {
                     borderRadius: 14,
                   }}
                 >
-                  Pensando...
+                  {t("ai.thinking")}
                 </Text>
               )}
             </ScrollView>
@@ -5863,7 +6495,7 @@ export function FinanceScreen() {
                 }}
               >
                 <Text style={{ fontSize: 12, color: C.blue, flex: 1 }}>
-                  Imagen adjunta
+                  {t("ai.imageAttached")}
                 </Text>
                 <Pressable onPress={() => setAiImage(null)}>
                   <Text style={{ color: C.muted }}>×</Text>
@@ -5930,15 +6562,22 @@ export function FinanceScreen() {
         {goalModal && (
           <Modal
             onClose={() => setGoalModal(null)}
-            title={goalModal.mode === "edit" ? "Editar meta" : "Nueva meta"}
+            title={
+              goalModal.mode === "edit" ? t("goals.edit") : t("goals.new")
+            }
             height="85vh"
           >
             <ScrollView
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
               style={{ maxHeight: 420 }}
+              contentContainerStyle={{
+                paddingTop: formKbPad.paddingTop,
+                paddingBottom: formKbPad.paddingBottom,
+              }}
             >
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                Nombre
+                {t("goals.name")}
               </Text>
               <TextInput
                 value={goalForm.name}
@@ -5946,7 +6585,7 @@ export function FinanceScreen() {
                 style={{ ...iS, marginBottom: 14 }}
               />
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                Monto objetivo
+                {t("goals.target")}
               </Text>
               <TextInput
                 keyboardType="number-pad"
@@ -5960,17 +6599,21 @@ export function FinanceScreen() {
                 style={{ ...iS, marginBottom: 14 }}
               />
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                Fecha limite (YYYY-MM-DD)
+                {t("goals.deadline")}
               </Text>
-              <TextInput
-                value={goalForm.deadline}
-                onChangeText={(v) =>
-                  setGoalForm((p) => ({ ...p, deadline: v }))
-                }
-                style={{ ...iS, marginBottom: 14 }}
-              />
+              <View style={{ marginBottom: 14 }}>
+                <TxDateField
+                  readOnly={false}
+                  dateStr={String(goalForm.deadline || "")}
+                  onChangeYmd={(ymd) =>
+                    setGoalForm((p) => ({ ...p, deadline: ymd }))
+                  }
+                  C={C}
+                  iS={iS}
+                />
+              </View>
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-                Color
+                {t("goals.color")}
               </Text>
               <View
                 style={{
@@ -6011,7 +6654,7 @@ export function FinanceScreen() {
                     fontWeight: 500,
                   }}
                 >
-                  Guardar meta
+                  {t("goals.save")}
                 </Text>
               </Pressable>
             </ScrollView>
@@ -6020,70 +6663,84 @@ export function FinanceScreen() {
         {goalWithdrawModal != null && (
           <Modal
             onClose={() => setGoalWithdrawModal(null)}
-            title="Retiro desde meta"
+            title={t("withdraw.title")}
           >
-            <Text style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>
-              Meta: {goals.find((x) => x.id === goalWithdrawModal)?.name}{" "}
-              (disponible{" "}
-              {fmt(goals.find((x) => x.id === goalWithdrawModal)?.saved || 0)})
-            </Text>
-            <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-              Monto
-            </Text>
-            <TextInput
-              keyboardType="number-pad"
-              value={fmtMoneyDigits(goalWithdrawForm.amountDigits)}
-              onChangeText={(v) =>
-                setGoalWithdrawForm((p) => ({
-                  ...p,
-                  amountDigits: stripMoneyToDigits(v),
-                }))
-              }
-              style={{ ...iS, marginBottom: 14 }}
-            />
-            <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-              Cuenta destino
-            </Text>
-            <View
-              style={{
-                borderWidth: 1,
-                borderColor: C.border,
-                borderRadius: 10,
-                overflow: "hidden",
-                backgroundColor: C.bg3,
-                marginBottom: 16,
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
+              style={{ flex: 1 }}
+              contentContainerStyle={{
+                paddingTop: formKbPad.paddingTop,
+                paddingBottom: formKbPad.paddingBottom,
               }}
             >
-              <ThemedPicker C={C}
-                selectedValue={goalWithdrawForm.account}
-                onValueChange={(v) =>
-                  setGoalWithdrawForm((p) => ({ ...p, account: v }))
+              <Text style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>
+                {t("withdraw.goalAvailableLine", {
+                  name:
+                    goals.find((x) => x.id === goalWithdrawModal)?.name || "",
+                  amount: fmt(
+                    goals.find((x) => x.id === goalWithdrawModal)?.saved || 0,
+                  ),
+                })}
+              </Text>
+              <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
+                {t("tx.amount")}
+              </Text>
+              <TextInput
+                keyboardType="number-pad"
+                value={fmtMoneyDigits(goalWithdrawForm.amountDigits)}
+                onChangeText={(v) =>
+                  setGoalWithdrawForm((p) => ({
+                    ...p,
+                    amountDigits: stripMoneyToDigits(v),
+                  }))
                 }
-              >
-                {accounts.map((o) => (
-                  <Picker.Item key={o} label={o} value={o} color={C.text} />
-                ))}
-              </ThemedPicker>
-            </View>
-            <Pressable
-              onPress={saveGoalWithdraw}
-              style={{
-                paddingVertical: 13,
-                borderRadius: 12,
-                backgroundColor: C.green,
-              }}
-            >
-              <Text
+                style={{ ...iS, marginBottom: 14 }}
+              />
+              <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
+                {t("tx.destAccount")}
+              </Text>
+              <View
                 style={{
-                  textAlign: "center",
-                  color: C.onPrimary,
-                  fontSize: 15,
-                  fontWeight: 500,
+                  borderWidth: 1,
+                  borderColor: C.border,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  backgroundColor: C.bg3,
+                  marginBottom: 16,
                 }}
               >
-                Transferir a cuenta
-              </Text>
-            </Pressable>
+                <ThemedPicker C={C}
+                  selectedValue={goalWithdrawForm.account}
+                  onValueChange={(v) =>
+                    setGoalWithdrawForm((p) => ({ ...p, account: v }))
+                  }
+                >
+                  {accounts.map((o) => (
+                    <Picker.Item key={o} label={o} value={o} color={C.text} />
+                  ))}
+                </ThemedPicker>
+              </View>
+              <Pressable
+                onPress={saveGoalWithdraw}
+                style={{
+                  paddingVertical: 13,
+                  borderRadius: 12,
+                  backgroundColor: C.green,
+                }}
+              >
+                <Text
+                  style={{
+                    textAlign: "center",
+                    color: C.onPrimary,
+                    fontSize: 15,
+                    fontWeight: 500,
+                  }}
+                >
+                  {t("withdraw.toAccount")}
+                </Text>
+              </Pressable>
+            </ScrollView>
           </Modal>
         )}
         {ruleEditor && (
@@ -6092,16 +6749,21 @@ export function FinanceScreen() {
             height="78vh"
             title={
               alertRules.some((a) => a.id === ruleEditor.id)
-                ? "Editar regla"
-                : "Nueva regla"
+                ? t("rules.edit")
+                : t("rules.new")
             }
           >
             <ScrollView
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
               showsVerticalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingTop: formKbPad.paddingTop,
+                paddingBottom: formKbPad.paddingBottom,
+              }}
             >
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-        Criterio
+                {t("rules.criterion")}
               </Text>
               <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
                 <Pressable
@@ -6152,7 +6814,7 @@ export function FinanceScreen() {
                           : C.muted,
                     }}
                   >
-                    Presupuesto (mes)
+                    {t("rules.budgetMonth")}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -6194,12 +6856,12 @@ export function FinanceScreen() {
                           : C.muted,
                     }}
                   >
-                    Saldo en cuenta
+                    {t("rules.accountBalance")}
                   </Text>
                 </Pressable>
               </View>
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-        Gravedad si se cumple
+                {t("common.severityWhen")}
               </Text>
               <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
                 <Pressable
@@ -6220,7 +6882,7 @@ export function FinanceScreen() {
                   <Text
                     style={{ textAlign: "center", fontSize: 13, color: C.gold }}
                   >
-                    Advertencia
+                    {t("rules.severityWarn")}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -6241,14 +6903,14 @@ export function FinanceScreen() {
                   <Text
                     style={{ textAlign: "center", fontSize: 13, color: C.red }}
                   >
-                    Atencion
+                    {t("rules.severityError")}
                   </Text>
                 </Pressable>
               </View>
               {ruleEditor.rule.kind === "budget_threshold" ? (
                 <View style={{ marginBottom: 16 }}>
                   <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                    Seccion (gasto del mes vs presupuesto de esa seccion)
+                    {t("rules.sectionBudgetHelp")}
                   </Text>
                   <View
                     style={{
@@ -6281,8 +6943,7 @@ export function FinanceScreen() {
                     </ThemedPicker>
                   </View>
                   <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                    Porcentaje del presupuesto (1-99). Avisa cuando el gasto del
-                    mes sea mayor o igual a este porcentaje.
+                    {t("rules.percentBudgetHelp")}
                   </Text>
                   <TextInput
                     value={String(ruleEditor.rule.percent)}
@@ -6312,7 +6973,7 @@ export function FinanceScreen() {
               ) : (
                 <View style={{ marginBottom: 16 }}>
                   <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                    Cuenta a vigilar
+                    {t("rules.accountWatch")}
                   </Text>
                   <View
                     style={{
@@ -6343,9 +7004,7 @@ export function FinanceScreen() {
                     </ThemedPicker>
                   </View>
                   <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                    Saldo minimo. Avisa si el saldo esta por debajo (y sigue siendo
-                    mayor o igual a cero). Los saldos negativos siempre generan
-                    alerta de atencion.
+                    {t("rules.minBalanceHelp")}
                   </Text>
                   <TextInput
                     value={String(ruleEditor.rule.minBalance)}
@@ -6419,7 +7078,7 @@ export function FinanceScreen() {
                     fontWeight: 500,
                   }}
                 >
-                  Guardar regla
+                  {t("rules.saveRule")}
                 </Text>
               </Pressable>
             </ScrollView>
@@ -6438,7 +7097,7 @@ export function FinanceScreen() {
         )}
         {confirmDelete && (
           <Confirm
-            msg="Eliminar esta transaccion? Esta accion no se puede deshacer."
+            msg={t("tx.deleteConfirm")}
             onYes={() => doDelete(confirmDelete)}
             onNo={() => setConfirmDelete(null)}
           />

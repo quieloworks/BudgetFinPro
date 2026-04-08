@@ -1,4 +1,12 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  type RefObject,
+} from "react";
+import { useTranslation } from "react-i18next";
 import {
   View,
   Text,
@@ -12,10 +20,10 @@ import DateTimePicker, {
   type DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
 import { ThemedPicker } from "./ThemedPicker";
-import { FREQ } from "../constants/frequencies";
 import { TY } from "../theme/typography";
 import type { ThemeTokens } from "../theme/tokens";
 import { parseLocalYmd, formatLocalYmd } from "../utils/dates";
+import { toBcp47Locale } from "../utils/i18nLocale";
 import { fmtMoneyDigits, stripMoneyToDigits } from "../utils/money";
 
 type Goal = { id: number; name: string };
@@ -47,6 +55,7 @@ type SetTxForm = (fn: (p: TxFormState) => TxFormState) => void;
 
 /** Definido a nivel de módulo para que React no desmonte el árbol en cada tecla (evita que el teclado se cierre). */
 export function TxTypeBar({ readOnly, fv, setFv, C }: TxTypeBarProps) {
+  const { t } = useTranslation();
   const F = fv;
   const setF = setFv;
   return (
@@ -109,18 +118,16 @@ export function TxTypeBar({ readOnly, fv, setFv, C }: TxTypeBarProps) {
             }}
           >
             {tp === "income"
-              ? "↑ Ingreso"
+              ? "↑ " + t("tx.income")
               : tp === "expense"
-                ? "↓ Egreso"
-                : "⇄ Transferencia"}
+                ? "↓ " + t("tx.expense")
+                : "⇄ " + t("tx.transfer")}
           </Text>
         </Pressable>
       ))}
     </View>
   );
 }
-
-const DN_SHORT = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
 function WebCalendarModal({
   visible,
@@ -135,6 +142,19 @@ function WebCalendarModal({
   onClose: () => void;
   C: ThemeTokens;
 }) {
+  const { t, i18n } = useTranslation();
+  const localeTag = useMemo(
+    () => toBcp47Locale(i18n.language),
+    [i18n.language],
+  );
+  const weekShort = useMemo(() => {
+    const base = new Date(2024, 0, 7);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      return d.toLocaleDateString(localeTag, { weekday: "short" });
+    });
+  }, [localeTag]);
   const base = parseLocalYmd(valueYmd);
   const [vy, setVy] = useState(base.getFullYear());
   const [vm, setVm] = useState(base.getMonth());
@@ -159,8 +179,8 @@ function WebCalendarModal({
 
   const monthLabel = useMemo(() => {
     const d = new Date(vy, vm, 1);
-    return d.toLocaleString("es", { month: "long", year: "numeric" });
-  }, [vy, vm]);
+    return d.toLocaleString(localeTag, { month: "long", year: "numeric" });
+  }, [vy, vm, localeTag]);
 
   const shiftMonth = (delta: number) => {
     const d = new Date(vy, vm + delta, 1);
@@ -215,7 +235,7 @@ function WebCalendarModal({
             </Pressable>
           </View>
           <View style={{ flexDirection: "row", marginBottom: 6 }}>
-            {DN_SHORT.map((x) => (
+            {weekShort.map((x) => (
               <Text
                 key={x}
                 style={{
@@ -262,7 +282,9 @@ function WebCalendarModal({
             onPress={onClose}
             style={{ marginTop: 12, paddingVertical: 10 }}
           >
-            <Text style={{ color: C.muted, textAlign: "center" }}>Cancelar</Text>
+            <Text style={{ color: C.muted, textAlign: "center" }}>
+              {t("webCal.cancel")}
+            </Text>
           </Pressable>
         </Pressable>
       </Pressable>
@@ -270,7 +292,8 @@ function WebCalendarModal({
   );
 }
 
-function TxDateField({
+/** Misma UX que la fecha en nueva transacción: calendario nativo / modal web. */
+export function TxDateField({
   readOnly,
   dateStr,
   onChangeYmd,
@@ -402,6 +425,8 @@ type TxFormProps = {
   goals: Goal[];
   accounts: string[];
   expenseSections: string[];
+  /** Scroll del padre (modal) para dejar el input visible sobre el teclado. */
+  scrollFieldIntoView?: (inputRef: RefObject<TextInput | null>) => void;
 };
 
 export function TxForm({
@@ -414,9 +439,20 @@ export function TxForm({
   goals,
   accounts,
   expenseSections,
+  scrollFieldIntoView,
 }: TxFormProps) {
+  const { t } = useTranslation();
   const F = fv;
   const setF = setFv;
+  const amountRef = useRef<TextInput>(null);
+  const descRef = useRef<TextInput>(null);
+  const notesRef = useRef<TextInput>(null);
+  const focusScroll = useCallback(
+    (r: RefObject<TextInput | null>) => {
+      if (!readOnly) scrollFieldIntoView?.(r);
+    },
+    [readOnly, scrollFieldIntoView],
+  );
   const amtBorder =
     F.type === "income" ? C.green : F.type === "expense" ? C.red : C.blue;
   const amtBg =
@@ -438,9 +474,10 @@ export function TxForm({
             marginBottom: 8,
           }}
         >
-          Monto
+          {t("tx.amount")}
         </Text>
         <TextInput
+          ref={amountRef}
           editable={!readOnly}
           keyboardType="number-pad"
           value={fmtMoneyDigits(String(F.amountDigits ?? ""))}
@@ -448,6 +485,7 @@ export function TxForm({
             !readOnly &&
             setF((p) => ({ ...p, amountDigits: stripMoneyToDigits(v) }))
           }
+          onFocus={() => focusScroll(amountRef)}
           style={{
             ...(iS as object),
             fontSize: TY.inputMoney,
@@ -477,9 +515,9 @@ export function TxForm({
                 ? F.account +
                   " → " +
                   (goals.find((g) => g.id === F.transferToGoalId)?.name ||
-                    "Meta")
+                    t("tx.goal"))
                 : (goals.find((g) => g.id === F.transferFromGoalId)?.name ||
-                    "Meta") +
+                    t("tx.goal")) +
                   " → " +
                   F.account}
           </Text>
@@ -488,13 +526,13 @@ export function TxForm({
       {F.type === "transfer" && !readOnly && (
         <View style={{ marginBottom: 14 }}>
           <Text style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-            Tipo de transferencia
+            {t("tx.transferType")}
           </Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {[
-              { k: "to_account", l: "Entre cuentas" },
-              { k: "to_goal", l: "A una meta" },
-              { k: "from_goal", l: "Desde meta" },
+              { k: "to_account", l: t("tx.betweenAccounts") },
+              { k: "to_goal", l: t("tx.toGoal") },
+              { k: "from_goal", l: t("tx.fromGoal") },
             ].map((o) => (
               <Pressable
                 key={o.k}
@@ -534,7 +572,7 @@ export function TxForm({
                   marginBottom: 5,
                 }}
               >
-                Meta (origen)
+                {t("tx.goalOrigin")}
               </Text>
               <View
                 style={{
@@ -580,7 +618,7 @@ export function TxForm({
                   marginBottom: 5,
                 }}
               >
-                Cuenta origen
+                {t("tx.sourceAccount")}
               </Text>
               <View
                 style={{
@@ -618,7 +656,7 @@ export function TxForm({
                   marginBottom: 5,
                 }}
               >
-                Cuenta destino
+                {t("tx.destAccount")}
               </Text>
               <View
                 style={{
@@ -658,7 +696,7 @@ export function TxForm({
                   marginBottom: 5,
                 }}
               >
-                Meta destino
+                {t("tx.destGoal")}
               </Text>
               <View
                 style={{
@@ -701,7 +739,7 @@ export function TxForm({
                   marginBottom: 5,
                 }}
               >
-                Cuenta destino
+                {t("tx.destAccount")}
               </Text>
               <View
                 style={{
@@ -740,12 +778,14 @@ export function TxForm({
             marginBottom: 5,
           }}
         >
-          Descripcion
+          {t("tx.desc")}
         </Text>
         <TextInput
+          ref={descRef}
           editable={!readOnly}
           value={String(F.desc || "")}
           onChangeText={(v) => !readOnly && setF((p) => ({ ...p, desc: v }))}
+          onFocus={() => focusScroll(descRef)}
           style={iS}
         />
       </View>
@@ -759,7 +799,7 @@ export function TxForm({
             marginBottom: 5,
           }}
         >
-          Fecha
+          {t("tx.date")}
         </Text>
         <TxDateField
           readOnly={readOnly}
@@ -780,11 +820,11 @@ export function TxForm({
         >
           {[
             {
-              l: "Seccion",
+              l: t("picker.section"),
               k: "section" as const,
               opts: expenseSections,
             },
-            { l: "Cuenta", k: "account" as const, opts: accounts },
+            { l: t("picker.account"), k: "account" as const, opts: accounts },
           ].map((f) => (
             <View key={f.k} style={{ flex: 1, minWidth: 140 }}>
               <Text
@@ -839,12 +879,14 @@ export function TxForm({
             marginBottom: 5,
           }}
         >
-          Notas
+          {t("tx.notes")}
         </Text>
         <TextInput
+          ref={notesRef}
           editable={!readOnly}
           value={String(F.notes || "")}
           onChangeText={(v) => !readOnly && setF((p) => ({ ...p, notes: v }))}
+          onFocus={() => focusScroll(notesRef)}
           style={iS}
         />
       </View>
@@ -869,10 +911,10 @@ export function TxForm({
               <Text
                 style={{ fontSize: 13, fontWeight: "500", color: C.text }}
               >
-                Recurrente
+                {t("tx.recurring")}
               </Text>
               <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                Se repite automaticamente
+                {t("tx.recurringSub")}
               </Text>
             </View>
             <Pressable
@@ -902,12 +944,14 @@ export function TxForm({
           {F.recurring && (
             <View>
               <Text style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                Frecuencia
+                {t("tx.freq")}
               </Text>
               <View
                 style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}
               >
-                {Object.entries(FREQ).map(([k, v]) => (
+                {(
+                  ["daily", "weekly", "biweekly", "monthly", "yearly"] as const
+                ).map((k) => (
                   <Pressable
                     key={k}
                     onPress={() => setF((p) => ({ ...p, freq: k }))}
@@ -926,7 +970,7 @@ export function TxForm({
                         color: F.freq === k ? C.green : C.muted,
                       }}
                     >
-                      {v}
+                      {t("freq." + k)}
                     </Text>
                   </Pressable>
                 ))}
@@ -946,7 +990,7 @@ export function TxForm({
           }}
         >
           <Text style={{ fontSize: 12, color: C.gold }}>
-            Recurrente · {FREQ[(F.freq as keyof typeof FREQ) || "monthly"] || F.freq}
+            {t("tx.recurring")} · {t("freq." + (F.freq || "monthly"))}
           </Text>
         </View>
       )}

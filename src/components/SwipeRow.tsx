@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { View, Text, Pressable } from "react-native";
+import { useTranslation } from "react-i18next";
 import { Swipeable } from "react-native-gesture-handler";
 import { useAppTheme } from "../theme/ThemeContext";
 import { TY } from "../theme/typography";
@@ -7,12 +8,13 @@ import { fmt } from "../utils/format";
 import { sectionDotColor } from "../utils/sectionDotColor";
 
 type SwipeRowProps = {
-  t: Record<string, unknown>;
+  tx: Record<string, unknown>;
   onView: (t: Record<string, unknown>, mode: string) => void;
   goals?: { id: number; name: string }[];
 };
 
-export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
+export const SwipeRow = ({ tx, onView, goals }: SwipeRowProps) => {
+  const { t } = useTranslation();
   const { C } = useAppTheme();
   const swipeRef = useRef<Swipeable>(null);
   const renderRightActions = () => (
@@ -28,7 +30,7 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
       <Pressable
         onPress={() => {
           swipeRef.current?.close();
-          onView(t, "edit");
+          onView(tx, "edit");
         }}
         style={{
           width: 76,
@@ -50,7 +52,7 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
       <Pressable
         onPress={() => {
           swipeRef.current?.close();
-          onView(t, "delete");
+          onView(tx, "delete");
         }}
         style={{
           width: 76,
@@ -67,29 +69,29 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
     </View>
   );
   const transferSub = () => {
-    if (t.type !== "transfer") return null;
-    if (t.transferFromGoalId != null) {
-      const g = (goals || []).find((x) => x.id === t.transferFromGoalId);
-      return (g ? g.name : "Meta") + " → " + t.account;
+    if (tx.type !== "transfer") return null;
+    if (tx.transferFromGoalId != null) {
+      const g = (goals || []).find((x) => x.id === tx.transferFromGoalId);
+      return (g ? g.name : t("txList.goalFallback")) + " → " + tx.account;
     }
-    if (t.transferToGoalId != null) {
-      const g = (goals || []).find((x) => x.id === t.transferToGoalId);
-      return t.account + " → " + (g ? g.name : "Meta");
+    if (tx.transferToGoalId != null) {
+      const g = (goals || []).find((x) => x.id === tx.transferToGoalId);
+      return tx.account + " → " + (g ? g.name : t("txList.goalFallback"));
     }
-    if (t.transferToAccount) return t.account + " → " + t.transferToAccount;
-    return t.account;
+    if (tx.transferToAccount) return tx.account + " → " + tx.transferToAccount;
+    return tx.account;
   };
   const rowColor =
-    t.type === "income" ? C.green : t.type === "expense" ? C.red : C.blue;
+    tx.type === "income" ? C.green : tx.type === "expense" ? C.red : C.blue;
   const rowBg =
-    t.type === "income" ? C.greenBg : t.type === "expense" ? C.redBg : C.blueBg;
+    tx.type === "income" ? C.greenBg : tx.type === "expense" ? C.redBg : C.blueBg;
   const rowBr =
-    t.type === "income"
+    tx.type === "income"
       ? C.greenBorder
-      : t.type === "expense"
+      : tx.type === "expense"
         ? C.redBorder
         : C.blueBorder;
-  const sym = t.type === "income" ? "↑" : t.type === "expense" ? "↓" : "⇄";
+  const sym = tx.type === "income" ? "↑" : tx.type === "expense" ? "↓" : "⇄";
   return (
     <View style={{ marginBottom: 8 }}>
       <Swipeable
@@ -99,7 +101,7 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
         friction={2}
       >
         <Pressable
-          onPress={() => onView(t, "view")}
+          onPress={() => onView(tx, "view")}
           style={{
             backgroundColor: C.bg2,
             borderWidth: 1,
@@ -143,7 +145,7 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
                 style={{ fontSize: TY.body, fontWeight: "600", color: C.text }}
                 numberOfLines={2}
               >
-                {(t.desc as string) || "Transferencia"}
+                {(tx.desc as string) || t("tx.transferDefault")}
               </Text>
               <View
                 style={{
@@ -159,16 +161,16 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
                     width: 8,
                     height: 8,
                     borderRadius: 4,
-                    backgroundColor: sectionDotColor(t.section as string, C),
+                    backgroundColor: sectionDotColor(tx.section as string, C),
                   }}
                 />
                 <Text style={{ fontSize: TY.caption, color: C.muted }}>
-                  {t.type === "transfer"
+                  {tx.type === "transfer"
                     ? String(transferSub() ?? "")
-                    : String(t.section) + " · " + String(t.account)}{" "}
-                  · {String(t.date)}
+                    : String(tx.section) + " · " + String(tx.account)}{" "}
+                  · {String(tx.date)}
                 </Text>
-                {t.recurring ? <Text style={{ color: C.gold }}> ↻</Text> : null}
+                {tx.recurring ? <Text style={{ color: C.gold }}> ↻</Text> : null}
               </View>
             </View>
           </View>
@@ -180,9 +182,10 @@ export const SwipeRow = ({ t, onView, goals }: SwipeRowProps) => {
               flexShrink: 0,
             }}
           >
-            {t.type === "transfer"
-              ? fmt(t.amount as number)
-              : (t.type === "income" ? "+" : "-") + fmt(t.amount as number)}
+            {tx.type === "transfer"
+              ? fmt(tx.amount as number)
+              : (tx.type === "income" ? "+" : "-") +
+                fmt(tx.amount as number)}
           </Text>
         </Pressable>
       </Swipeable>

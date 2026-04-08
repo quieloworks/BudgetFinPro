@@ -1,4 +1,5 @@
 import { View, Text } from "react-native";
+import { useTranslation } from "react-i18next";
 import { useAppTheme } from "../theme/ThemeContext";
 import { TY } from "../theme/typography";
 import { fmt } from "../utils/format";
@@ -10,6 +11,7 @@ type TxListProps = {
 };
 
 export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
+  const { t } = useTranslation();
   const { C } = useAppTheme();
   return (
     <View>
@@ -22,31 +24,35 @@ export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
             paddingVertical: 40,
           }}
         >
-          {emptyMsg || "Sin transacciones"}
+          {emptyMsg || t("txList.empty")}
         </Text>
       )}
-      {txs.map((t) => {
+      {txs.map((tx) => {
         const sub =
-          t.type !== "transfer"
+          tx.type !== "transfer"
             ? null
-            : t.transferFromGoalId != null
-              ? ((goals || []).find((g) => g.id === t.transferFromGoalId)
-                  ?.name || "Meta") +
+            : tx.transferFromGoalId != null
+              ? ((goals || []).find((g) => g.id === tx.transferFromGoalId)
+                  ?.name || t("txList.goalFallback")) +
                 " → " +
-                t.account
-              : t.transferToGoalId != null
-                ? t.account +
+                tx.account
+              : tx.transferToGoalId != null
+                ? tx.account +
                   " → " +
-                  ((goals || []).find((g) => g.id === t.transferToGoalId)
-                    ?.name || "Meta")
-                : t.transferToAccount
-                  ? t.account + " → " + t.transferToAccount
-                  : t.account;
+                  ((goals || []).find((g) => g.id === tx.transferToGoalId)
+                    ?.name || t("txList.goalFallback"))
+                : tx.transferToAccount
+                  ? tx.account + " → " + tx.transferToAccount
+                  : tx.account;
         const col =
-          t.type === "income" ? C.green : t.type === "expense" ? C.red : C.blue;
+          tx.type === "income"
+            ? C.green
+            : tx.type === "expense"
+              ? C.red
+              : C.blue;
         return (
           <View
-            key={t.id as number}
+            key={tx.id as number}
             style={{
               flexDirection: "row",
               justifyContent: "space-between",
@@ -65,12 +71,12 @@ export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
                 }}
                 numberOfLines={2}
               >
-                {(t.desc as string) || "Transferencia"}
+                {(tx.desc as string) || t("tx.transferDefault")}
               </Text>
               <Text
                 style={{ fontSize: TY.caption, color: C.muted, marginTop: 4 }}
               >
-                {String(t.date)} · {String(sub || t.account)}
+                {String(tx.date)} · {String(sub || tx.account)}
               </Text>
             </View>
             <Text
@@ -81,9 +87,10 @@ export const TxList = ({ txs, emptyMsg, goals }: TxListProps) => {
                 flexShrink: 0,
               }}
             >
-              {t.type === "transfer"
-                ? fmt(t.amount as number)
-                : (t.type === "income" ? "+" : "-") + fmt(t.amount as number)}
+              {tx.type === "transfer"
+                ? fmt(tx.amount as number)
+                : (tx.type === "income" ? "+" : "-") +
+                  fmt(tx.amount as number)}
             </Text>
           </View>
         );
