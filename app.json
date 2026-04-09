@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Budget",
-    "slug": "Budget",
+    "name": "Budget fin pro",
+    "slug": "budget-fin-pro",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,15 +10,21 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0B3D4D"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.quielo.budgetfinpro",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.quielo.budgetfinpro",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0B3D4D"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -30,6 +36,11 @@
     "plugins": [
       "@react-native-community/datetimepicker",
       "./plugins/withAndroidKeyboardOverlay"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c0d4f77b-1f48-4d77-9595-b5e38cefbc82"
+      }
+    }
   }
 }
